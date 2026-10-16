@@ -542,19 +542,61 @@ const activeSubs = k => S.subs.filter(s => !s.since || diffMonths(s.since, k) >=
 const paidIn = (it, k) => !!(it.paid && it.paid[k]);
 const projById = id => S.projects.find(p => p.id === id);
 const cardById = id => S.cards.find(c => c.id === id);
+/* =========================================================
+   FATURA DO CARTÃO: em que mês cada gasto é cobrado
+   Gasto no cartão depois do dia de fechamento vai para a fatura
+   seguinte. Se o vencimento é antes do fechamento (ex.: fecha 25,
+   vence 5), a fatura é paga no mês seguinte ao fechamento.
+   ========================================================= */
+function faturaMonth(c, m, day) {
+  if (!c || !c.closeDay || !day) return m;
+  let f = day > c.closeDay ? addMonths(m, 1) : m;
+  if (c.dueDay && c.dueDay <= c.closeDay) f = addMonths(f, 1);
+  return f;
+}
+const chargedLabel = (m, day) => `Cobrado em ${day}/${MES_CURTO[parseKey(m).m - 1]}`;
+const OFFSETS = [0, -1, -2];   /* um gasto pode cair até 2 faturas depois */
 function projMonthItems(k, onlyCounted = true) {
   const out = [];
-  S.projects.forEach(p => { if (onlyCounted && p.count === false) return; (p.items || []).forEach(x => { if (x.date && x.date.slice(0, 7) === k) out.push({ p, x, cents: itemBRL(p, x) }); }); });
+  S.projects.forEach(p => { if (onlyCounted && p.count === false) return; (p.items || []).forEach(x => {
+    if (!x.date) return;
+    const m = x.date.slice(0, 7), day = +x.date.slice(8, 10), c = x.cardId && cardById(x.cardId), f = c ? faturaMonth(c, m, day) : m;
+    if (f === k) out.push({ p, x, cents: itemBRL(p, x), shifted: f !== m ? chargedLabel(m, day) : '' });
+  }); });
   return out;
 }
-/* Tudo o que sai no mês, numa lista só */
+/* Tudo o que sai no mês, numa lista só (gastos no cartão entram no mês da fatura) */
 function outItems(k) {
   const L = [];
-  month(k).bills.forEach(b => L.push({ type: 'bill', it: b, name: b.name, cents: b.cents, done: !!b.paid, day: b.day, cat: itemCat(b), card: b.cardId, est: !!b.estimate, tag: b.kind !== 'compra' && b.recurring ? 'Todo mês' : '' }));
-  activeInst(k).forEach(i => L.push({ type: 'inst', it: i, name: i.name, cents: i.cents, done: paidIn(i, k), day: i.day, cat: itemCat(i, 'compras'), card: i.cardId, tag: `Parcela ${instNum(i, k)} de ${i.total}` }));
-  activeSubs(k).forEach(s => L.push({ type: 'sub', it: s, name: s.name, cents: s.cents, done: paidIn(s, k), day: s.day, cat: itemCat(s, 'assinaturas'), card: s.cardId, tag: 'Todo mês' }));
+  OFFSETS.forEach(off => {
+    const m = addMonths(k, off), mo = S.months[m]; if (!mo) return;
+    (mo.bills || []).forEach(b => {
+      const c = b.cardId && cardById(b.cardId), f = c ? faturaMonth(c, m, b.day) : m;
+      if (f !== k) return;
+      L.push({ type: 'bill', it: b, name: b.name, cents: b.cents, done: !!b.paid, day: f === m ? b.day : null, cat: itemCat(b), card: b.cardId, est: !!b.estimate,
+        shifted: f !== m ? chargedLabel(m, b.day) : '', tag: b.kind !== 'compra' && b.recurring ? 'Todo mês' : '' });
+    });
+  });
+  S.installments.forEach(i => {
+    const c = i.cardId && cardById(i.cardId);
+    for (const off of OFFSETS) {
+      const m = addMonths(k, off), n = instNum(i, m); if (n < 1 || n > i.total) continue;
+      const f = c ? faturaMonth(c, m, i.day) : m;
+      if (f === k) { L.push({ type: 'inst', it: i, name: i.name, cents: i.cents, done: paidIn(i, k), day: f === m ? i.day : null, cat: itemCat(i, 'compras'), card: i.cardId,
+        shifted: f !== m ? chargedLabel(m, i.day) : '', tag: `Parcela ${n} de ${i.total}` }); break; }
+    }
+  });
+  S.subs.forEach(s => {
+    const c = s.cardId && cardById(s.cardId);
+    for (const off of OFFSETS) {
+      const m = addMonths(k, off); if (s.since && diffMonths(s.since, m) < 0) continue;
+      const f = c ? faturaMonth(c, m, s.day) : m;
+      if (f === k) { L.push({ type: 'sub', it: s, name: s.name, cents: s.cents, done: paidIn(s, k), day: f === m ? s.day : null, cat: itemCat(s, 'assinaturas'), card: s.cardId,
+        shifted: f !== m ? chargedLabel(m, s.day) : '', tag: 'Todo mês' }); break; }
+    }
+  });
   activeProvs(k).forEach(p => L.push({ type: 'prov', it: p, name: p.name, cents: (p.paidAmt && p.paidAmt[k]) || p.monthly, done: !!(p.paidAmt && p.paidAmt[k]), cat: 'reservas', tag: 'Guardar na reserva' }));
-  projMonthItems(k).forEach(o => L.push({ type: 'pitem', it: o.x, name: o.x.desc || 'Gasto', cents: o.cents, done: true, fixed: true, cat: itemCat(o.x, 'viagem'), card: o.x.cardId, tag: o.p.name }));
+  projMonthItems(k).forEach(o => L.push({ type: 'pitem', it: o.x, name: o.x.desc || 'Gasto', cents: o.cents, done: true, fixed: true, cat: itemCat(o.x, 'viagem'), card: o.x.cardId, shifted: o.shifted, tag: o.p.name }));
   return L.sort((a, b) => (a.done - b.done) || ((a.day || 99) - (b.day || 99)));
 }
 function monthTotals(k) {
@@ -567,7 +609,11 @@ function monthTotals(k) {
 function cardItems(id, k) { return outItems(k).filter(o => o.card === id); }
 function cardUsage(c, k) {
   const items = cardItems(c.id, k), fatura = sum(items), paid = items.length > 0 && items.every(o => o.done);   /* fatura paga = todos os gastos dela pagos */
-  const future = S.installments.filter(i => i.cardId === c.id).reduce((a, i) => { const n = instNum(i, k); return a + (n < 1 ? i.total : Math.max(0, i.total - n)) * i.cents; }, 0);
+  /* parcelas que vão cair em faturas depois desta */
+  const future = S.installments.filter(i => i.cardId === c.id).reduce((a, i) => {
+    let n = 0; for (let j = 1; j <= i.total; j++) { const m = addMonths(i.start, j - 1); if (faturaMonth(c, m, i.day) > k) n++; }
+    return a + n * i.cents;
+  }, 0);
   const used = (paid ? 0 : fatura) + future;
   return { fatura, paid, future, used, free: Math.max(0, (c.limit || 0) - used), pct: pctOf(used, c.limit || 0) };
 }
@@ -644,7 +690,7 @@ function dueText(day, k, done) {
 /* Uma linha da lista. Gastos de viagem não têm caixinha (já foram pagos). */
 function itemRow(o, k) {
   const cat = catById(o.cat);
-  const sub = [dueText(o.day, k, o.done), o.tag ? esc(o.tag) : '', o.type !== 'prov' ? cat.label : '', o.card && cardById(o.card) ? esc(cardById(o.card).name) : ''].filter(Boolean);
+  const sub = [dueText(o.day, k, o.done), o.shifted || '', o.tag ? esc(o.tag) : '', o.type !== 'prov' ? cat.label : '', o.card && cardById(o.card) ? esc(cardById(o.card).name) : ''].filter(Boolean);
   if (o.est) sub.unshift('<span class="est-label">Valor estimado</span>');
   if (o.it && o.it.pix) sub.push(`<button class="pixbtn" data-act="copy" data-text="${esc(o.it.pix)}" aria-label="Copiar PIX de ${esc(o.name)}">Copiar PIX</button>`);
   const label = o.type === 'prov' ? 'Marcar como guardado' : 'Marcar como pago';
@@ -798,6 +844,7 @@ function pageCard(id) {
       <div class="cc-foot"><span>Gastou<b>${fmt(u.used)}</b></span><span style="text-align:right">Limite<b>${fmt(c.limit || 0)}</b></span></div></div>
     ${progress(u.pct)}<p class="progress-text">Ainda pode gastar ${fmt(u.free)}.</p>
     <div class="kvs"><div class="kv"><span>Fatura de ${monthName(k).toLowerCase()}</span><b>${fmt(u.fatura)}</b></div>
+      <div class="kv"><span>Fecha ${helpBtn(HELP.fechamento)}</span><b style="font-size:17px">${c.closeDay ? 'dia ' + c.closeDay : '<button class="link" data-act="editCard" data-id="' + c.id + '">Colocar</button>'}${c.dueDay ? `, vence dia ${c.dueDay}` : ''}</b></div>
       ${u.future ? `<div class="kv"><span>Parcelas que ainda vão vir</span><b>${fmt(u.future)}</b></div>` : ''}</div>
     ${items.length ? (u.paid
       ? `<p class="hero-done" style="font-size:22px;margin-top:18px">${ICON.tick.replace('<svg', '<svg stroke="currentColor" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')}Fatura paga</p><button class="link" data-act="payFatura" data-id="${c.id}" data-v="0">Desmarcar a fatura</button>`
@@ -1210,10 +1257,11 @@ function openItem(o = {}) {
     <div id="f-freqbox">${lockFreq ? `<p style="margin-top:6px">${t === 'inst' ? 'Parcelado' : 'Todo mês'}</p>` : ''}</div>
     <div id="f-parc"></div>
     <div id="f-cardbox"></div>
+    <label class="f"><span id="f-day-l">Dia de pagar (opcional)</span><input id="f-day" type="text" inputmode="numeric" pattern="[0-9]*" value="${it && it.day ? it.day : ''}" placeholder="Ex.: 10" autocomplete="off"></label>
+    <p class="note" id="f-fat" hidden></p>
     <div id="f-pixbox"></div>
     <div id="f-paidbox"></div>
-    ${moreBlock(`${field('f-day', 'Dia de pagar (opcional)', it ? it.day || '' : '', 'Ex.: 10', { num: true })}
-      <div id="f-outmore"></div>${iconPickerHTML()}`)}`;
+    ${moreBlock(`<div id="f-outmore"></div>${iconPickerHTML()}`)}`;
 
   openSheet({
     title: it ? 'Mudar' : 'Anotar', body,
@@ -1243,12 +1291,24 @@ function openItem(o = {}) {
         $('#f-paidbox', sh).innerHTML = swRow('f-paid', mode === 'in' ? 'Já recebi' : freq === 'parc' ? 'Já paguei esta parcela' : 'Já paguei', paidNow);
         updEnd();
       };
+      /* Mostra em qual fatura o gasto vai cair, de acordo com o fechamento do cartão */
+      const updFat = () => {
+        const c = mode === 'out' && cardId && cardById(cardId), box = $('#f-fat', sh), d = clampInt($('#f-day', sh).value, 1, 31, null);
+        $('#f-day-l', sh).textContent = c ? 'Dia da compra ou da cobrança' : 'Dia de pagar (opcional)';
+        if (!c) { box.hidden = true; return; }
+        box.hidden = false;
+        if (!c.closeDay) { box.innerHTML = `Para saber a fatura certa, coloque o dia de fechamento do cartão ${esc(c.name)}. <button type="button" class="link" data-act="editCard" data-id="${c.id}">Colocar agora</button>`; return; }
+        if (!d) { box.textContent = `O cartão fecha dia ${c.closeDay}. Coloque o dia da compra para saber a fatura.`; return; }
+        const f = faturaMonth(c, k, d);
+        box.textContent = `O cartão fecha dia ${c.closeDay}. ${f === k ? `Vai na fatura de ${monthName(f).toLowerCase()}.` : `Como foi depois do fechamento, vai na fatura de ${monthName(f).toLowerCase()}.`}`;
+      };
       const updEnd = () => { const e = $('#f-end', sh); if (!e) return; const c = parseInt($('#f-cur', sh).value, 10) || 1, tt = parseInt($('#f-tot', sh).value, 10);
         e.textContent = !tt ? 'Ex.: parcela 3 de 12.' : tt < c ? 'O total precisa ser maior que a parcela atual.' : tt === c ? 'É a última parcela.' : `Termina em ${monthName(addMonths(k, tt - c)).toLowerCase()} de ${parseKey(addMonths(k, tt - c)).y}.`; };
       const drawOutMore = () => {
         $('#f-cardbox', sh).innerHTML = mode === 'out' && S.cards.length ? `<p class="sub-h">Pago com cartão?</p>${chips('f-card', [{ v: '', label: 'Não' }, ...S.cards.map(c => ({ v: c.id, label: esc(c.name), pre: `<i class="dot" style="background:${esc(c.color)}"></i>` }))], cardId, 'Pago com cartão')}
           <p class="note" style="margin-top:6px">Assinaturas e contas de todo mês no cartão entram sozinhas na fatura de cada mês.</p>` : '';
-        onChips(sh, 'f-card', v => { cardId = v; });
+        onChips(sh, 'f-card', v => { cardId = v; const dd = $('#f-day', sh); if (v && !dd.value && !it && k === todayKey()) dd.value = new Date().getDate(); updFat(); });
+        updFat();
         $('#f-outmore', sh).innerHTML = mode === 'out' && (t === 'bill' || !it) ? field('f-payto', 'Pagar para (opcional)', it ? it.payTo || '' : '', 'Ex.: Seu João', { cap: true }) : '';
       };
       sh.addEventListener('click', e => {
@@ -1259,6 +1319,7 @@ function openItem(o = {}) {
         drawCat(); drawFreq(); drawOutMore();
       });
       sh.addEventListener('input', e => {
+        if (e.target.id === 'f-day') updFat();
         if (e.target.id === 'f-cur' || e.target.id === 'f-tot') updEnd();
         if (e.target.id === 'f-name' && mode === 'out' && !catManual) { const g = guess(e.target.value); if (g) { cat = g.cat; const box = $('#f-cat', sh); if (box) { pickChip(box, cat); const on = box.querySelector('.on'); if (on && on.scrollIntoView) try { on.scrollIntoView({ block: 'nearest', inline: 'center' }); } catch (_) {} } } }
       });
@@ -1299,7 +1360,8 @@ function openItem(o = {}) {
           if (it) Object.assign(it, data); else month(k, true).bills.push({ id: uid(), ...data });
         }
       }
-      commit(); toast(it ? 'Mudança salva' : 'Anotado');
+      const cc = mode === 'out' && cardId && cardById(cardId), fm = cc ? faturaMonth(cc, k, day) : k;
+      commit(); toast(fm !== k ? `Anotado na fatura de ${monthName(fm).toLowerCase()}` : (it ? 'Mudança salva' : 'Anotado'));
     },
     onDelete: it ? () => deleteItem(t, it.id) : null,
   });
@@ -1310,8 +1372,9 @@ function openCard(c) {
   const body = `${field('f-name', 'Nome do cartão', c ? c.name : '', 'Ex.: Cartão do dia a dia', { cap: true })}
     ${moneyField('f-limit', 'Limite', c ? c.limit : 0, 'BRL')}
     <p class="sub-h">Cor</p><div class="swatches" role="radiogroup" aria-label="Cor">${CARD_COLORS.map(col => `<button type="button" class="swatch ${col === color ? 'on' : ''}" style="--sw:${col}" data-color="${col}" aria-label="Cor"></button>`).join('')}</div>
+    <div class="f-row">${field('f-close', 'Fecha no dia', c ? c.closeDay || '' : '', 'Ex.: 3', { num: true, help: helpBtn(HELP.fechamento) })}${field('f-due', 'Vence no dia', c ? c.dueDay || '' : '', 'Ex.: 10', { num: true })}</div>
+    <p class="note">Gastos depois do fechamento vão para a fatura do mês seguinte.</p>
     ${moreBlock(`${field('f-last4', 'Últimos 4 números (opcional)', c ? c.last4 : '', 'Ex.: 1234', { num: true })}
-      <div class="f-row">${field('f-close', 'Fecha no dia', c ? c.closeDay || '' : '', 'Ex.: 3', { num: true, help: helpBtn(HELP.fechamento) })}${field('f-due', 'Vence no dia', c ? c.dueDay || '' : '', 'Ex.: 10', { num: true })}</div>
       <p class="note">Nunca coloque o número completo do cartão.</p>`)}`;
   openSheet({ title: c ? 'Mudar cartão' : 'Novo cartão', body,
     canSave: sh => $('#f-name', sh).value.trim().length > 0,
