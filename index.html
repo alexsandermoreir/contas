@@ -1085,6 +1085,50 @@ function loadMyData() {
 }
 
 /* =========================================================
+   SUAS CONTAS DE NOVEMBRO DE 2026 (trazidas da sua nota)
+   Sem valor na nota = fica o valor de outubro como estimativa (*):
+   ao marcar como pago, o app pergunta o valor certo.
+   ========================================================= */
+function loadNovData() {
+  if (S.novLoaded) return;
+  const k = '2026-11', m = month(k, true);
+  const B = (name, reais, o = {}) => {
+    const old = m.bills.find(x => norm(x.name) === norm(name));
+    const data = { name, cents: Math.round(reais * 100), kind: 'fixa', recurring: true, paid: false, estimate: false, ...o };
+    if (old) Object.assign(old, data); else m.bills.push({ id: uid(), ...data });
+  };
+  B('Água', 68.46, { cat: 'contas', variable: true, estimate: true });
+  B('Meu Nubank', 1276.37, { cat: 'financeiro', variable: true, estimate: true });
+  B('OAB', 90, { cat: 'trabalho' });
+  B('Duo Gourmet', 25, { cat: 'alimentacao', payTo: 'Igor', pix: '10394806670' });
+  B('Energia', 56, { cat: 'contas', variable: true, estimate: true });
+  B('Solar', 166, { cat: 'contas', payTo: 'Ronaldo', pix: '04320324609', variable: true, estimate: true });
+  B('Aluguel', 900, { cat: 'moradia', payTo: 'Enivaldo', pix: '00717634655' });
+  B('Nubank Bela', 1890.40, { cat: 'financeiro', variable: true, estimate: true });
+  B('Itaúcard', 1340.68, { cat: 'financeiro', variable: true, estimate: true });
+  /* Rendimentos (ainda a receber) */
+  [['Ana Teixeira Advocacia', 6400, 1], ['Thaynan Moda', 400, 10], ['Lecticia Portugal', 350, 15], ['Luiz Carlos', 200, 15], ['Thaynan Moda', 400, 20]]
+    .forEach(([name, reais, day]) => {
+      const old = m.incomes.find(x => norm(x.name) === norm(name) && x.day === day);
+      const data = { name, cents: Math.round(reais * 100), day, received: false, recurring: true, estimate: false };
+      if (old) Object.assign(old, data); else m.incomes.push({ id: uid(), ...data });
+    });
+  /* Viagem ao Japão: parcelas de novembro (a receber) */
+  let trip = S.projects.find(p => norm(p.name) === norm('Viagem ao Japão'));
+  if (!trip) { trip = { id: uid(), name: 'Viagem ao Japão', currency: 'BRL', rate: 1, rates: {}, budget: 0, cover: null, color: '#30B0C7', count: false, items: [] }; S.projects.push(trip); }
+  const BEL = ['Belinha', ''], IGOR = ['Igor', '10394806670'], BRUNO = ['Bruno', '6da67862-ec22-4719-ad8b-72f2787bf03b'];
+  [[BEL, 'Monte Fuji Hospedagem (4/6)', 44.76], [BEL, 'Osaka Hospedagem (4/6)', 78.97],
+    [IGOR, 'Korea Hospedagem (2/6)', 97.23], [IGOR, 'Kyoto Hospedagem (4/6)', 74.59], [IGOR, 'Seoul Hospedagem (2/6)', 97.23],
+    [IGOR, 'Trem-bala Kyoto-Osaka', 50], [IGOR, 'Restaurante Kyoto', 13], [IGOR, 'Ônibus Tokyo-Fuji', 50],
+    [BRUNO, 'Tokyo Hospedagem (5/6)', 121.97]]
+    .forEach(([[person, pix], desc, reais]) => {
+      if (S.receivables.some(r => norm(r.person) === norm(person) && norm(r.desc) === norm(desc))) return;
+      S.receivables.push({ id: uid(), person, pix, desc, cents: Math.round(reais * 100), done: false, projectId: trip.id });
+    });
+  S.novLoaded = true;
+}
+
+/* =========================================================
    DESENHAR A TELA
    ========================================================= */
 const TABS = [{ id: 'home', label: 'Início' }, { id: 'mes', label: 'Mês' }, { id: 'cards', label: 'Cartões' }, { id: 'projects', label: 'Projetos' }, { id: 'prov', label: 'Reservas' }];
@@ -1183,7 +1227,11 @@ const moreBlock = inner => `<button type="button" class="more-btn" data-more ari
 function onMore(sh) { sh.querySelectorAll('[data-more]').forEach(b => b.addEventListener('click', () => { const open = b.getAttribute('aria-expanded') !== 'true'; b.setAttribute('aria-expanded', String(open)); b.nextElementSibling.hidden = !open; })); }
 const getC = (sh, id = 'f-amount') => +($('#' + id, sh).dataset.cents || 0);
 function setC(inp, c) { inp.dataset.cents = c || 0; inp.value = (!c && inp.dataset.optional) ? '' : fmtCur(c, inp.dataset.cur || 'BRL'); }
-function focusAmount(sh) { try { $('#f-amount', sh).focus({ preventScroll: true }); } catch (e) {} }
+/* No iPhone (principalmente como app na tela inicial), focar sozinho um campo que ainda está
+   entrando na tela deixa ele "focado sem teclado" e o toque não abre mais o teclado.
+   Por isso só foca sozinho onde há teclado físico (computador). */
+const TOUCH = matchMedia('(hover: none) and (pointer: coarse)').matches || 'ontouchstart' in window;
+function focusAmount(sh) { if (TOUCH) return; try { $('#f-amount', sh).focus({ preventScroll: true }); } catch (e) {} }
 function attachSuggest(sh, inputId, boxId, items, onPick) {
   const inp = $('#' + inputId, sh), box = $('#' + boxId, sh); let cur = [];
   inp.addEventListener('input', () => {
@@ -1632,7 +1680,7 @@ document.addEventListener('click', e => {
     case 'editProv': openProv(provById(el.dataset.id)); break;
     case 'move': openMove(provById(el.dataset.id), el.dataset.dir); break;
     case 'editMove': { const pv = provById(r.dataset.prov); const mv = pv && (pv.moves || []).find(x => x.id === id); if (mv) openMove(pv, null, mv); break; }
-    case 'loadMine': loadMyData(); ensureMonth(todayKey()); go('home'); save(); toast('Suas contas de outubro foram trazidas'); break;
+    case 'loadMine': loadMyData(); loadNovData(); ensureMonth(todayKey()); go('home'); save(); toast('Suas contas de outubro foram trazidas'); break;
     case 'payFatura': {
       const k2 = ui.view, on = el.dataset.v === '1'; let n = 0;
       cardItems(el.dataset.id, k2).forEach(o => {
@@ -1682,6 +1730,15 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && SH) { closeSheet(); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('item-text')) { e.preventDefault(); e.target.click(); }
 });
+/* Toque num campo que já está focado mas sem teclado: tira e devolve o foco no próprio toque,
+   o que faz o iPhone mostrar o teclado */
+document.addEventListener('touchend', e => {
+  const t = e.target;
+  if (t && t.tagName === 'INPUT' && !/^(checkbox|radio|file|month|date)$/.test(t.type) && document.activeElement === t
+    && (!window.visualViewport || visualViewport.height > innerHeight * 0.85)) {
+    e.preventDefault(); t.blur(); t.focus();
+  }
+}, { passive: false });
 /* Campo de dinheiro: você digita só números e ele vira R$ na hora */
 document.addEventListener('input', e => {
   const t = e.target;
@@ -1704,6 +1761,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
    ========================================================= */
 (function init() {
   if (isEmpty() && !S.mineLoaded) { loadMyData(); save(); }
+  if (!S.novLoaded) { loadNovData(); save(); }
   applyTheme();
   $('#fab').innerHTML = ICON.plus;
   $('#tabbar').innerHTML = TABS.map(t => `<button class="tab" role="tab" data-act="tab" data-tab="${t.id}" aria-selected="false">${ICON[t.id]}<span>${t.label}</span></button>`).join('');
