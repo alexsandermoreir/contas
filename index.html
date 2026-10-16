@@ -2033,6 +2033,7 @@ document.addEventListener('click', e => {
     case 'swdel': { const row = el.parentNode.querySelector('.item'); if (row) deleteItem(row.dataset.type, row.dataset.id); break; }
     case 'cloudConf': cloudSaveConf(); break;
     case 'cloudLogin': cloudAuth('login'); break;
+    case 'cloudGoogle': cloudGoogle(); break;
     case 'cloudSignup': cloudAuth('signup'); break;
     case 'cloudReset': cloudAuth('reset'); break;
     case 'cloudSync': cloudSyncNow(); break;
@@ -2210,6 +2211,7 @@ async function cloudStart() {
     await loadScript(V + 'firebase-app-compat.js'); await loadScript(V + 'firebase-auth-compat.js'); await loadScript(V + 'firebase-firestore-compat.js');
     const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(conf);
     cloud.auth = app.auth(); cloud.db = app.firestore();
+    cloud.auth.getRedirectResult().catch(e => { cloudMsg = AUTH_ERR[e && e.code] || ''; });   /* volta do login do Google */
     cloud.auth.onAuthStateChanged(u => { cloud.user = u; cloud.ready = true; if (u) cloudFirstSync(); if (ui.page === 'cloud' || ui.tab === 'more') render(); });
   } catch (e) { cloud = null; cloudMsg = 'Não deu para conectar. Veja se a internet está ligada e se a configuração está certa.'; if (ui.page === 'cloud') render(); }
 }
@@ -2252,7 +2254,9 @@ function cloudSaveConf() {
 const AUTH_ERR = { 'auth/invalid-credential': 'E-mail ou senha errados.', 'auth/wrong-password': 'E-mail ou senha errados.', 'auth/user-not-found': 'Não existe conta com esse e-mail. Toque em "Criar conta".',
   'auth/email-already-in-use': 'Já existe conta com esse e-mail. Toque em "Entrar".', 'auth/weak-password': 'A senha precisa ter pelo menos 6 letras ou números.',
   'auth/invalid-email': 'Esse e-mail não parece certo.', 'auth/missing-password': 'Digite a senha.', 'auth/operation-not-allowed': 'No Firebase, ative o login por "E-mail/senha" (passo 3).',
-  'auth/network-request-failed': 'Sem internet agora.', 'auth/too-many-requests': 'Muitas tentativas. Espere um pouco e tente de novo.' };
+  'auth/network-request-failed': 'Sem internet agora.',
+  'auth/unauthorized-domain': 'No Firebase, em Authentication > Configurações > Domínios autorizados, adicione alexsandermoreir.github.io.',
+  'auth/account-exists-with-different-credential': 'Esse e-mail já entrou de outro jeito. Use e-mail e senha.', 'auth/too-many-requests': 'Muitas tentativas. Espere um pouco e tente de novo.' };
 async function cloudAuth(what) {
   if (!cloud || !cloud.auth) { toast('Ainda conectando. Espere um pouco.'); return; }
   const email = ($('#f-email') || {}).value.trim(), pass = ($('#f-pass') || {}).value;
@@ -2262,6 +2266,20 @@ async function cloudAuth(what) {
     if (what === 'signup') await cloud.auth.createUserWithEmailAndPassword(email, pass); else await cloud.auth.signInWithEmailAndPassword(email, pass);
     cloudMsg = ''; toast('Pronto, você entrou');
   } catch (e) { cloudMsg = AUTH_ERR[e && e.code] || ('Não deu certo: ' + (e && e.message || 'erro')); render(); }
+}
+/* Entrar com a conta Google: abre a janela do Google; se o iPhone não deixar, vai e volta pela página do Google */
+async function cloudGoogle() {
+  if (!cloud || !cloud.auth) { toast('Ainda conectando. Espere um pouco.'); return; }
+  const prov = new firebase.auth.GoogleAuthProvider(); prov.setCustomParameters({ prompt: 'select_account' });
+  try { await cloud.auth.signInWithPopup(prov); cloudMsg = ''; toast('Pronto, você entrou'); }
+  catch (e) {
+    const c = e && e.code;
+    if (c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request') return;
+    if (c === 'auth/popup-blocked' || c === 'auth/operation-not-supported-in-this-environment' || c === 'auth/web-storage-unsupported') {
+      try { await cloud.auth.signInWithRedirect(prov); return; } catch (e2) { cloudMsg = AUTH_ERR[e2 && e2.code] || 'Não deu para entrar com o Google. Use e-mail e senha.'; render(); return; }
+    }
+    cloudMsg = AUTH_ERR[c] || ('Não deu certo: ' + (e && e.message || 'erro')); render();
+  }
 }
 async function cloudSyncNow() {
   if (!cloudUser()) return; cloudBusy = true; cloudMsg = 'Sincronizando…'; render();
@@ -2287,7 +2305,8 @@ function pageCloud() {
     <ol class="steps">
       <li>No computador, abra <b>console.firebase.google.com</b> e entre com sua conta Google.</li>
       <li>Toque em <b>Criar projeto</b>, dê o nome <code>minhas-contas</code> e conclua (pode desligar o Google Analytics).</li>
-      <li>No menu, abra <b>Authentication</b> → <b>Começar</b> → <b>E-mail/senha</b> → ative e salve.</li>
+      <li>No menu, abra <b>Authentication</b> → <b>Começar</b>. Em <b>Método de login</b>, ative <b>Google</b> (escolha seu e-mail de suporte) e também <b>E-mail/senha</b>.</li>
+      <li>Em <b>Authentication</b> → <b>Configurações</b> → <b>Domínios autorizados</b>, adicione <code>alexsandermoreir.github.io</code>.</li>
       <li>No menu, abra <b>Firestore Database</b> → <b>Criar banco de dados</b> → escolha o local <code>southamerica-east1 (São Paulo)</code> → modo de produção.</li>
       <li>Ainda no Firestore, abra a aba <b>Regras</b>, troque tudo pelo texto abaixo e toque em <b>Publicar</b>.</li>
       <li>Na engrenagem (Configurações do projeto), em <b>Seus apps</b>, toque no ícone <code>&lt;/&gt;</code> (Web), dê um nome e registre.</li>
@@ -2305,9 +2324,11 @@ service cloud.firestore {
     <button class="btn primary" data-act="cloudConf">Salvar configuração</button></section>`;
   if (!cloud || !cloud.ready) { cloudStart(); return h + `<p class="note">Conectando…</p><button class="link" data-act="cloudForget">Tirar a configuração</button>`; }
   if (!cloud.user) return h + `<section class="block"><div class="block-head"><h2>Entrar</h2></div>
+    <button class="btn primary" style="margin-top:8px" data-act="cloudGoogle"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="#fff" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="#fff" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z" opacity=".85"/><path fill="#fff" d="M6.4 14c-.2-.6-.3-1.3-.3-2s.1-1.4.3-2V7.4H3.1a10 10 0 0 0 0 9.2z" opacity=".7"/><path fill="#fff" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10C7.2 7.8 9.4 6 12 6z" opacity=".55"/></svg><span>Entrar com o Google</span></button>
+    <p class="sub-h" style="margin-top:26px">Ou com e-mail e senha</p>
     <label class="f"><span>E-mail</span><input id="f-email" type="email" autocomplete="username" inputmode="email" autocapitalize="off" placeholder="seu@email.com"></label>
     <label class="f"><span>Senha</span><input id="f-pass" type="password" autocomplete="current-password" placeholder="Pelo menos 6 letras ou números"></label>
-    <button class="btn primary" data-act="cloudLogin">Entrar</button>
+    <button class="btn soft" style="margin-top:20px" data-act="cloudLogin">Entrar com e-mail</button>
     <div class="btn-row"><button class="btn soft" data-act="cloudSignup">Criar conta</button><button class="btn soft" data-act="cloudReset">Esqueci a senha</button></div>
     <p class="note">Na primeira vez, toque em "Criar conta" com seu e-mail e uma senha nova. Depois, use "Entrar" em qualquer aparelho.</p></section>
     <button class="link" data-act="cloudForget" style="margin-top:20px">Tirar a configuração</button>`;
