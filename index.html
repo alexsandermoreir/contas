@@ -95,6 +95,7 @@ img{display:block;max-width:100%}
 .progress-text{margin-top:8px;font-size:15px;color:var(--muted)}
 .kv{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:14px 0;border-bottom:1px solid var(--line)}
 .kv:last-child{border-bottom:0}
+button.kv{text-align:left}
 .kv span:first-child{color:var(--muted);font-size:17px}
 .kv b{font-family:var(--num);font-variant-numeric:tabular-nums;font-size:22px;font-weight:600;white-space:nowrap}
 .kvs{margin-top:22px;border-top:1px solid var(--line)}
@@ -201,7 +202,7 @@ html[data-theme="escuro"] .seg button[aria-pressed="true"]{background:#3A3A3C}
 .mi:active{opacity:.55}
 .mi svg.ic{width:22px;height:22px;color:var(--ink);flex:none}
 .mi .mi-t{flex:1;min-width:0}
-.mi .mi-s,.switch-row .mi-s{display:block;font-size:13px;color:var(--muted)}
+.mi .mi-s,.switch-row .mi-s,.kv .mi-s{display:block;font-size:13px;color:var(--muted)}
 .mi .mi-v{color:var(--muted);font-family:var(--num);font-variant-numeric:tabular-nums;font-size:15px;white-space:nowrap}
 .chev{width:14px;height:14px;color:var(--faint);flex:none}
 .mrow .chev{margin-left:4px;align-self:center}
@@ -472,7 +473,9 @@ function curFmt(c) { if (!curFmts.has(c)) { let f; try { f = new Intl.NumberForm
 const decOf = c => curFmt(c).resolvedOptions().maximumFractionDigits;
 const fmtCur = (minor, c = 'BRL') => curFmt(c).format((minor || 0) / Math.pow(10, decOf(c)));
 const curName = c => (CURS.find(x => x[0] === c) || [c, c])[1];
-const rateOf = (p, c) => c === 'BRL' ? 1 : ((p.rates && p.rates[c]) || (c === p.currency ? p.rate : 0) || 0);
+const rateOf = (p, c) => c === 'BRL' ? 1 : ((p.rates && p.rates[c]) || (c === p.currency ? p.rate : 0) || fxRate(p, c) || 0);
+/* Cotação média dos câmbios feitos para o projeto */
+function fxRate(p, c) { const L = (p.fx || []).filter(f => f.cur === c), amt = L.reduce((a, f) => a + f.amt, 0); return amt ? (L.reduce((a, f) => a + f.brl, 0) / 100) / (amt / Math.pow(10, decOf(c))) : 0; }
 function itemBRL(p, x) { const c = x.cur || p.currency; return c === 'BRL' ? (x.amt || 0) : Math.round((x.amt || 0) / Math.pow(10, decOf(c)) * rateOf(p, c) * 100); }
 function toBRL(p, minor) { if (!p || p.currency === 'BRL') return minor || 0; return Math.round((minor || 0) / Math.pow(10, decOf(p.currency)) * (p.rate || 0) * 100); }
 
@@ -626,6 +629,7 @@ function projMonthItems(k, onlyCounted = true) {
   const out = [];
   S.projects.forEach(p => { if (onlyCounted && p.count === false) return; (p.items || []).forEach(x => {
     if (!x.date) return;
+    const xc = x.cur || p.currency; if (!x.cardId && xc !== 'BRL' && (p.fx || []).some(f => f.cur === xc)) return;   /* já saiu da conta no câmbio */
     const m = x.date.slice(0, 7), day = +x.date.slice(8, 10), c = x.cardId && cardById(x.cardId), f = c ? faturaMonth(c, m, day) : m;
     if (f === k) out.push({ p, x, cents: itemBRL(p, x), shifted: f !== m ? chargedLabel(m, day) : '' });
   }); });
@@ -639,6 +643,7 @@ function outItems(k) {
     (mo.bills || []).forEach(b => {
       const c = b.cardId && cardById(b.cardId), f = c ? faturaMonth(c, m, b.day) : m;
       if (f !== k) return;
+      if (b.kind === 'estorno') { L.push({ type: 'bill', it: b, name: b.name, cents: -b.cents, credit: true, fixed: true, done: false, day: f === m ? b.day : null, cat: validCat('financeiro', 'out', 'outros'), card: b.cardId, shifted: f !== m ? chargedLabel(m, b.day) : '', tag: 'Estorno' }); return; }
       L.push({ type: 'bill', it: b, name: b.name, cents: b.cents, done: !!b.paid, day: f === m ? b.day : null, cat: itemCat(b), card: b.cardId, est: !!b.estimate,
         shifted: f !== m ? chargedLabel(m, b.day) : '', tag: b.cardBase ? 'Outras compras do cartão' : b.kind !== 'compra' && b.recurring ? 'Todo mês' : '' });
     });
@@ -664,7 +669,22 @@ function outItems(k) {
   activeProvs(k).forEach(p => L.push({ type: 'prov', it: p, name: p.name, cents: (p.paidAmt && p.paidAmt[k]) || p.monthly, done: !!(p.paidAmt && p.paidAmt[k]), day: p.aporteDay || null, cat: validCat('reservas', 'out', 'reservas'), tag: 'Guardar na reserva' }));
   personItems('pay', k).forEach(o => L.push(o));
   provMoveItems(k).filter(o => !o.isIn).forEach(o => L.push(o));
+  /* Antecipação de fatura: sai da conta no dia em que pagou e diminui a fatura do mês dela */
+  (S.cardPays || []).forEach(cp => {
+    const c = cardById(cp.cardId); if (!c || !cp.date) return; const m = cp.date.slice(0, 7); if (m === cp.fatura) return;
+    if (m === k) L.push({ type: 'cpay', it: cp, name: `Antecipação da fatura ${c.name}`, cents: cp.cents, done: true, fixed: true, day: +cp.date.slice(8, 10), cat: validCat('financeiro', 'out', 'outros'), tag: `Fatura de ${monthName(cp.fatura).toLowerCase()}` });
+    if (cp.fatura === k) L.push({ type: 'cpay', it: cp, name: `Já antecipado: ${c.name}`, cents: -cp.cents, credit: true, fixed: true, done: false, cat: validCat('financeiro', 'out', 'outros'), tag: `Pago em ${fmtDate(cp.date)}` });
+  });
+  /* Câmbio: o real sai da conta e vira dinheiro da viagem */
+  S.projects.forEach(p => (p.fx || []).forEach(f => { if (f.date && f.date.slice(0, 7) === k) L.push({ type: 'fx', it: f, name: `Câmbio: ${fmtCur(f.amt, f.cur)}`, cents: f.brl, done: true, fixed: true, day: +f.date.slice(8, 10), cat: validCat('viagem', 'out', 'outros'), tag: p.name }); }));
   projMonthItems(k).forEach(o => L.push({ type: 'pitem', it: o.x, name: o.x.desc || 'Gasto', cents: o.cents, done: true, fixed: true, cat: itemCat(o.x, 'viagem'), card: o.x.cardId, shifted: o.shifted, tag: o.p.name }));
+  /* estornos e antecipações contam como pagos quando a fatura do cartão está paga */
+  /* a antecipação não desconta mais do que a fatura tem */
+  const grossOf = id => sum(L.filter(o => o.card === id));
+  const usedAdv = {};
+  L.filter(o => o.type === 'cpay' && o.credit).forEach(o => { const id = o.it.cardId, room = Math.max(0, grossOf(id) - (usedAdv[id] || 0)); o.cents = -Math.min(o.it.cents, room); usedAdv[id] = (usedAdv[id] || 0) - o.cents; });
+  const paidCard = id => { const xs = L.filter(o => o.card === id && !o.credit); return xs.length > 0 && xs.every(o => o.done); };
+  L.forEach(o => { if (o.credit) { const id = o.card || (o.it && o.it.cardId); o.done = id ? paidCard(id) : true; } });
   return L.sort((a, b) => (a.done - b.done) || ((a.day || 99) - (b.day || 99)));
 }
 /* Tudo o que entra no mês: entradas, quem te paga parcelas e resgates das reservas */
@@ -702,15 +722,19 @@ function forecastTotals(k) {
 }
 function cardItems(id, k) { return outItems(k).filter(o => o.card === id); }
 function cardUsage(c, k) {
-  const items = cardItems(c.id, k), fatura = sum(items), paid = items.length > 0 && items.every(o => o.done);   /* fatura paga = todos os gastos dela pagos */
+  const items = cardItems(c.id, k), gross = sum(items), real = items.filter(o => !o.credit);
+  const adv = (S.cardPays || []).filter(x => x.cardId === c.id && x.fatura === k).reduce((a, x) => a + x.cents, 0);
+  const fatura = Math.max(0, gross - adv), paid = (gross > 0 && fatura === 0) || (real.length > 0 && real.every(o => o.done));   /* fatura paga = todos os gastos dela pagos */
   /* parcelas que vão cair em faturas depois desta */
   const future = S.installments.filter(i => i.cardId === c.id).reduce((a, i) => {
     let n = 0; for (let j = 1; j <= i.total; j++) { const m = addMonths(i.start, j - 1); if (faturaMonth(c, m, i.day) > k) n++; }
     return a + n * i.cents;
   }, 0);
   const used = (paid ? 0 : fatura) + future;
-  return { fatura, paid, future, used, free: Math.max(0, (c.limit || 0) - used), pct: pctOf(used, c.limit || 0) };
+  return { fatura, gross, adv, paid, future, used, free: Math.max(0, (c.limit || 0) - used), pct: pctOf(used, c.limit || 0) };
 }
+/* Em qual fatura cai uma compra feita hoje neste cartão */
+const openFatura = c => c && c.closeDay ? faturaMonth(c, todayKey(), new Date().getDate()) : addMonths(todayKey(), 1);
 function isEmpty() { return !Object.values(S.months).some(m => (m.bills || []).length || (m.incomes || []).length) && !S.installments.length && !S.subs.length && !S.cards.length && !S.projects.length && !S.receivables.length && !(S.payables || []).length && !S.debts.length; }
 
 function findItem(type, id) {
@@ -723,12 +747,15 @@ function findItem(type, id) {
     case 'recv': return S.receivables.find(x => x.id === id);
     case 'pay': return (S.payables || []).find(x => x.id === id);
     case 'move': return (S.provisions || []).flatMap(p => p.moves || []).find(x => x.id === id);
+    case 'fx': return S.projects.flatMap(p => p.fx || []).find(x => x.id === id);
+    case 'cpay': return (S.cardPays || []).find(x => x.id === id);
     case 'debt': return S.debts.find(x => x.id === id);
     case 'pitem': return S.projects.flatMap(p => p.items || []).find(x => x.id === id);
     case 'prov': return (S.provisions || []).find(x => x.id === id);
   }
 }
 const projOfItem = id => S.projects.find(p => (p.items || []).some(x => x.id === id));
+const projOfFx = id => S.projects.find(p => (p.fx || []).some(x => x.id === id));
 const provOfMove = id => (S.provisions || []).find(p => (p.moves || []).some(x => x.id === id));
 function removeItem(type, id) {
   const f = a => (a || []).filter(x => x.id !== id);
@@ -739,6 +766,8 @@ function removeItem(type, id) {
   else if (type === 'recv') S.receivables = f(S.receivables);
   else if (type === 'pay') S.payables = f(S.payables);
   else if (type === 'move') (S.provisions || []).forEach(p => { p.moves = f(p.moves); });
+  else if (type === 'fx') S.projects.forEach(p => { p.fx = f(p.fx); });
+  else if (type === 'cpay') S.cardPays = f(S.cardPays);
   else if (type === 'debt') S.debts = f(S.debts);
   else if (type === 'pitem') S.projects.forEach(p => { p.items = f(p.items); });
   else if (type === 'prov') S.provisions = f(S.provisions);
@@ -837,13 +866,20 @@ function chartSVG(data) {
 /* =========================================================
    INÍCIO: o que falta pagar e receber, e como foram os meses
    ========================================================= */
+/* Mês do Início: se o mês atual está todo pago, mostra o próximo (dá para pedir para ver o atual até o mês virar) */
+function homeKey() {
+  const cur = todayKey(); if (S.prefs && S.prefs.showCur === cur) return cur;
+  const t = monthTotals(cur); return t.out && !t.toPay ? addMonths(cur, 1) : cur;
+}
 function viewHome() {
-  const now = todayKey(), t = monthTotals(now), data = lastMonths(6);
+  const cur = todayKey(), now = homeKey(); if (now !== cur) ensureMonth(now);
+  const t = monthTotals(now), data = lastMonths(6), curPaid = now !== cur || (() => { const tc = monthTotals(cur); return tc.out && !tc.toPay; })();
   if (!data.some(d => d.k === ui.sel)) ui.sel = now;
   const sel = data.find(d => d.k === ui.sel);
   const toPay = outItems(now).filter(o => !o.done && !o.fixed);
   const saved = (S.provisions || []).reduce((a, p) => a + provBalance(p), 0);
-  const iowe = (S.payables || []).reduce((a, r) => a + personLeft(r), 0), owe = S.receivables.reduce((a, r) => a + personLeft(r), 0);
+  const iowe = sum(personItems('pay', now).filter(o => !o.done)), owe = sum(personItems('recv', now).filter(o => !o.done));
+  const ioweAll = (S.payables || []).reduce((a, r) => a + personLeft(r), 0), oweAll = S.receivables.reduce((a, r) => a + personLeft(r), 0);
   const star = f => f ? '<span class="est">*</span>' : '';
   let h = `<div class="top"><h1 class="title">${monthName(now)}</h1><button class="link" data-act="more" style="gap:6px">${ICON.more.replace('<svg', '<svg width="20" height="20"')}Mais</button></div>`;
   if (isEmpty()) {
@@ -851,6 +887,8 @@ function viewHome() {
       <div class="btn-row" style="margin-top:24px"><button class="btn primary" style="margin:0" data-act="fab">Anotar o primeiro gasto</button></div>
       <div class="btn-row"><button class="btn soft" data-act="seed">Ver um exemplo</button></div>`;
   }
+  if (now !== cur) h += `<p class="callbox">${ICON.tick.replace('<svg', '<svg width="16" height="16" style="vertical-align:-2px" stroke="var(--pen)" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')} ${monthName(cur)} está todo pago. Agora você vê ${monthName(now).toLowerCase()}. <button class="link" data-act="showCur" data-v="1">Mostrar ${monthName(cur).toLowerCase()}</button></p>`;
+  else if (curPaid) h += `<p class="note"><button class="link" data-act="showCur" data-v="0">Ver ${monthName(addMonths(cur, 1)).toLowerCase()}</button></p>`;
   if (S.hasExample) h += `<p class="note">Você está vendo um exemplo. <button class="link" data-act="clearEx">Tirar o exemplo</button></p>`;
   h += `<section class="hero"><p class="hero-label">Falta pagar</p>
     ${t.out && !t.toPay ? `<p class="hero-done">${ICON.tick.replace('<svg', '<svg stroke="currentColor" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')}Tudo pago</p>`
@@ -859,14 +897,14 @@ function viewHome() {
   <div class="kvs"><div class="kv"><span>Falta receber</span><b>${fmt(t.toGet)}${star(t.estGet)}</b></div>
     <div class="kv"><span>Vai sobrar</span><b class="${t.left < 0 ? 'bad' : ''}">${fmt(t.left)}${star(t.estAny)}</b></div>
     ${(S.provisions || []).length && pref('homeSaved') ? `<button class="kv" style="width:100%" data-act="tab" data-tab="prov"><span>Guardado nas reservas</span><b>${fmt(saved)}</b></button>` : ''}
-    ${iowe && pref('homePeople') ? `<button class="kv" style="width:100%" data-act="page" data-page="pay"><span>Eu devo a pessoas</span><b>${fmt(iowe)}</b></button>` : ''}
-    ${owe && pref('homePeople') ? `<button class="kv" style="width:100%" data-act="page" data-page="recv"><span>Me devem</span><b>${fmt(owe)}</b></button>` : ''}</div>
+    ${ioweAll && pref('homePeople') ? `<button class="kv" style="width:100%" data-act="page" data-page="pay"><span>Pagar a pessoas em ${monthName(now).toLowerCase()}<span class="mi-s">Falta no total ${fmt(ioweAll)}</span></span><b>${fmt(iowe)}</b></button>` : ''}
+    ${oweAll && pref('homePeople') ? `<button class="kv" style="width:100%" data-act="page" data-page="recv"><span>Receber de pessoas em ${monthName(now).toLowerCase()}<span class="mi-s">Falta no total ${fmt(oweAll)}</span></span><b>${fmt(owe)}</b></button>` : ''}</div>
   ${t.estAny ? '<p class="note"><span class="est">*</span> Tem valor estimado. Quando a conta chegar, marque e confirme o valor certo.</p>' : ''}`;
   if (toPay.length && pref('homeToPay')) h += `<section class="block"><div class="block-head"><h2>Para pagar</h2>${toPay.length > 5 ? `<button class="link" data-act="goMonth" data-k="${now}">Ver todas (${toPay.length})</button>` : ''}</div>
       <div class="list">${toPay.slice(0, 5).map(o => itemRow(o, now)).join('')}</div></section>`;
   /* Previsão dos próximos 6 meses, com o que sobra somado */
   let acc = 0;
-  const fc = !pref('homeForecast') ? [] : Array.from({ length: +pref('fcMonths') || 6 }, (_, i) => { const k = addMonths(now, i), f = forecastTotals(k); acc += f.left; return { k, ...f, acc }; });
+  const fc = !pref('homeForecast') ? [] : Array.from({ length: +pref('fcMonths') || 6 }, (_, i) => { const k = addMonths(cur, i), f = forecastTotals(k); acc += f.left; return { k, ...f, acc }; });
   const bad = fc.find(f => f.left < 0), avg = Math.round(fc.reduce((a, f) => a + f.left, 0) / (fc.length || 1));
   if (fc.length) h += `<section class="block"><div class="block-head"><h2>Próximos meses</h2></div>
     <p class="callbox">${bad ? `<b class="bad">Atenção:</b> em ${monthName(bad.k).toLowerCase()} deve faltar ${fmt(-bad.left)}. Segure os gastos antes disso.`
@@ -898,10 +936,10 @@ function viewMes() {
   h += `<div class="trio"><div><span>Entrou</span><b>${fmt(t.inc)}${ins.some(x => x.est) ? '<span class="est">*</span>' : ''}</b></div><div><span>Saiu</span><b>${fmt(t.out)}${outs.some(o => o.est) ? '<span class="est">*</span>' : ''}</b></div><div><span>Sobra</span><b class="${t.left < 0 ? 'bad' : ''}">${fmt(t.left)}</b></div></div>
     ${progress(pctOf(t.paid, t.out))}<p class="progress-text">${t.out && !t.toPay ? 'Tudo pago neste mês.' : `Falta pagar ${fmt(t.toPay)}.`}${t.toGet ? ` Falta receber ${fmt(t.toGet)}.` : ''}</p>`;
   h += `<div class="seg" role="group" aria-label="O que mostrar"><button data-act="list" data-v="out" aria-pressed="${isOut}">Saídas (${outs.length})</button><button data-act="list" data-v="in" aria-pressed="${!isOut}">Entradas (${ins.length})</button></div>`;
-  const fats = S.cards.map(c => ({ c, u: cardUsage(c, k) })).filter(x => x.u.fatura);
+  const fats = S.cards.map(c => ({ c, u: cardUsage(c, k) })).filter(x => x.u.gross || x.u.adv);
   if (isOut && fats.length && pref('showFats')) h += `<section class="grp"><div class="grp-h">${glyphHTML('', 'financeiro', { glyph: 'card' })}<span class="grp-n">Faturas dos cartões</span><b>${fmt(fats.reduce((a, x) => a + x.u.fatura, 0))}</b></div>
     <div class="list">${fats.map(({ c, u }) => `<button class="mrow" data-act="open" data-tab="cards" data-page="card:${c.id}"><span class="ccmini" style="--cc:${esc(c.color)}"></span>
-      <span style="flex:1;min-width:0"><span class="m-name">${esc(c.name)}</span><span class="m-sub"><span>${u.paid ? 'Paga' : 'A pagar'}${c.dueDay ? ` · vence dia ${c.dueDay}` : ''}</span></span></span><span class="m-val">${fmt(u.fatura)}</span>${chev}</button>`).join('')}</div>
+      <span style="flex:1;min-width:0"><span class="m-name">${esc(c.name)}</span><span class="m-sub"><span>${u.paid ? 'Paga' : 'A pagar'}${c.dueDay ? ` · vence dia ${c.dueDay}` : ''}</span>${u.adv ? `<span>Antecipado ${fmt(u.adv)}</span>` : ''}</span></span><span class="m-val">${u.adv ? `<small>de ${fmt(u.gross)}</small>` : ''}${fmt(u.fatura)}</span>${chev}</button>`).join('')}</div>
     <p class="note">A fatura é a soma de tudo que está no cartão neste mês. Se um gasto do cartão aumentar ou diminuir, a fatura muda junto. Esses gastos aparecem também nas categorias abaixo (não são somados duas vezes).</p></section>`;
   h += cur.length ? `${pref('groupCats') ? groupHTML(cur, k) : `<div class="list" style="margin-top:18px">${cur.map(o => itemRow(o, k)).join('')}</div>`}<div class="total"><span>Total de ${isOut ? 'saídas' : 'entradas'}</span><b>${fmt(sum(cur))}</b></div>`
     : `<div class="list" style="margin-top:18px"><p class="empty">${isOut ? 'Nada anotado neste mês. <button data-act="fab">Anotar um gasto</button>' : 'Nenhuma entrada neste mês. <button data-act="fab">Anotar uma entrada</button>'}</p></div>`;
@@ -1019,22 +1057,28 @@ function pageCard(id) {
     <div class="cc" style="--cc:${esc(c.color)}"><span class="cc-name">${esc(c.name)}</span>${c.last4 ? `<span class="cc-digits">•••• ${esc(c.last4)}</span>` : ''}
       <div class="cc-foot"><span>Gastou<b>${fmt(u.used)}</b></span><span style="text-align:right">Limite<b>${fmt(c.limit || 0)}</b></span></div></div>
     ${c.limit ? `${progress(u.pct)}<p class="progress-text">Ainda pode gastar ${fmt(u.free)}.</p>` : `<p class="progress-text">Coloque o limite, o dia de fechamento e o de vencimento em <button class="link" data-act="editCard" data-id="${c.id}">Editar</button>.</p>`}
-    <div class="kvs"><div class="kv"><span>Fatura de ${monthName(k).toLowerCase()}</span><b>${fmt(u.fatura)}</b></div>
+    <div class="kvs">${u.adv ? `<div class="kv"><span>Total da fatura</span><b>${fmt(u.gross)}</b></div><div class="kv"><span>Já antecipado</span><b class="good">− ${fmt(u.adv)}</b></div>` : ''}
+      <div class="kv"><span>${u.adv ? 'Falta pagar' : `Fatura de ${monthName(k).toLowerCase()}`}</span><b>${fmt(u.fatura)}</b></div>
       <div class="kv"><span>Fecha ${helpBtn(HELP.fechamento)}</span><b style="font-size:17px">${c.closeDay ? 'dia ' + c.closeDay : '<button class="link" data-act="editCard" data-id="' + c.id + '">Colocar</button>'}${c.dueDay ? `, vence dia ${c.dueDay}` : ''}</b></div>
       ${u.future ? `<div class="kv"><span>Parcelas que ainda vão vir</span><b>${fmt(u.future)}</b></div>` : ''}</div>
     ${items.length ? (u.paid
       ? `<p class="hero-done" style="font-size:22px;margin-top:18px">${ICON.tick.replace('<svg', '<svg stroke="currentColor" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')}Fatura paga</p><button class="link" data-act="payFatura" data-id="${c.id}" data-v="0">Desmarcar a fatura</button>`
       : `<button class="btn primary" data-act="payFatura" data-id="${c.id}" data-v="1">Paguei a fatura (${fmt(u.fatura)})</button><p class="note">Marca como pagos todos os gastos, parcelas e assinaturas deste cartão em ${monthName(k).toLowerCase()}.</p>`) : ''}
+    <div class="btn-row"><button class="btn soft" data-act="cardPay" data-id="${c.id}">Antecipar pagamento</button></div>
+    ${(S.cardPays || []).some(x => x.cardId === c.id && x.fatura === k) ? `<section class="block"><div class="block-head"><h2>Antecipações</h2></div><div class="list">${(S.cardPays || []).filter(x => x.cardId === c.id && x.fatura === k).map(x =>
+      `<div class="item" data-type="cpay" data-id="${x.id}"><span class="tick" style="visibility:hidden"></span><div class="item-text" data-act="edit" role="button" tabindex="0"><div class="item-name"><span class="nm">Antecipação</span></div><div class="item-sub"><span>Pago em ${fmtDate(x.date)}</span></div></div><div class="item-val good">− ${fmt(x.cents)}</div></div>`).join('')}</div></section>` : ''}
     ${subs.length ? `<section class="block"><div class="block-head"><h2>Assinaturas e contas fixas</h2></div><div class="list">${subs.map(o => itemRow(o, k)).join('')}</div></section>` : ''}
     <section class="block"><div class="block-head"><h2>Compras de ${monthName(k).toLowerCase()}</h2></div>
       <div class="list">${buys.length ? buys.map(o => itemRow(o, k)).join('') : '<p class="empty">Nenhuma compra neste cartão no mês. Toque no + para anotar.</p>'}</div></section>`;
 }
 /* Viagens e projetos */
 function projStats(p) {
-  const items = p.items || [], spentBRL = items.reduce((a, x) => a + itemBRL(p, x), 0);
+  const items = p.items || []; let spentBRL = items.reduce((a, x) => a + itemBRL(p, x), 0);
   const byCur = new Map(); items.forEach(x => { const c = x.cur || p.currency; byCur.set(c, (byCur.get(c) || 0) + (x.amt || 0)); });
   const budgetBRL = toBRL(p, p.budget || 0);
-  return { spentBRL, byCur, budgetBRL, pct: pctOf(spentBRL, budgetBRL), single: byCur.size <= 1 && (!byCur.size || byCur.has(p.currency)) };
+  const debtsBRL = p.countDebts === false ? 0 : (S.payables || []).filter(r => r.projectId === p.id).reduce((a, r) => a + personTotal(r), 0);
+  const itemsBRL = spentBRL; spentBRL += debtsBRL;
+  return { spentBRL, itemsBRL, debtsBRL, byCur, budgetBRL, pct: pctOf(spentBRL, budgetBRL), single: byCur.size <= 1 && (!byCur.size || byCur.has(p.currency)) };
 }
 const projThumb = p => `<span class="thumb" style="--pc:${esc(p.color || '#30B0C7')}">${p.cover ? `<img src="${p.cover}" alt="">` : ICON.trip}</span>`;
 function pageProjects() {
@@ -1053,9 +1097,11 @@ function pageProject(id) {
   let h = `<div class="top">${backBtn('Projetos')}<button class="link" data-act="editProj" data-id="${p.id}">Editar</button></div>
     <h1 class="title">${esc(p.name)}</h1>${p.cover ? `<div class="cover"><img src="${p.cover}" alt=""></div>` : ''}
     <section class="hero" style="margin-top:22px"><p class="hero-label">Gastou até agora</p><span class="hero-value">${fmt(st.spentBRL)}</span>
-      ${st.byCur.size && !(st.byCur.size === 1 && st.byCur.has('BRL')) ? `<p class="progress-text" style="margin-top:2px">${[...st.byCur.entries()].map(([c, v]) => fmtCur(v, c)).join(' + ')}</p>` : ''}
+      ${st.debtsBRL ? `<p class="progress-text" style="margin-top:2px">Gastos anotados ${fmt(st.itemsBRL)} + o que você deve a pessoas ${fmt(st.debtsBRL)}</p>` : ''}
+      ${st.byCur.size && !(st.byCur.size === 1 && st.byCur.has('BRL')) ? `<p class="progress-text" style="margin-top:2px">Anotado: ${[...st.byCur.entries()].map(([c, v]) => fmtCur(v, c)).join(' + ')}</p>` : ''}
       ${p.budget ? `${progress(st.pct)}<p class="progress-text">${st.spentBRL > st.budgetBRL ? `Passou ${fmt(st.spentBRL - st.budgetBRL)} do planejado.` : `Ainda tem ${fmt(st.budgetBRL - st.spentBRL)} do planejado (${fmtCur(p.budget, p.currency)}).`}</p>` : ''}</section>
     ${usedCurs.length ? `<div class="kvs">${usedCurs.map(c => `<div class="kv"><span>1 ${curName(c).toLowerCase()} (${c}) ${helpBtn(HELP.cotacao)}</span><b>${rateOf(p, c) ? 'R$ ' + String(rateOf(p, c)).replace('.', ',') : '<button class="link" data-act="editProj" data-id="' + p.id + '">Definir</button>'}</b></div>`).join('')}</div>` : ''}
+    ${fxHTML(p)}
     <section class="block"><div class="block-head"><h2>Gastos</h2></div><div class="list">
       ${items.length ? items.map(x => { const c = x.cur || p.currency; return `<div class="item" data-type="pitem" data-id="${x.id}"><div class="item-text" data-act="edit" role="button" tabindex="0" aria-label="Ver ou mudar ${esc(x.desc)}">
         <div class="item-name">${glyphHTML(x.desc, itemCat(x, 'viagem'))}<span class="nm">${esc(x.desc || 'Gasto')}</span></div><div class="item-sub"><span>${fmtDateShort(x.date)}</span><span>${catById(itemCat(x, 'viagem')).label}</span>${x.cardId && cardById(x.cardId) ? `<span>${esc(cardById(x.cardId).name)}</span>` : ''}</div></div>
@@ -1066,6 +1112,20 @@ function pageProject(id) {
   <section class="block"><div class="block-head"><h2>Quem te deve</h2><button class="link" data-act="newRecv" data-pid="${p.id}">Adicionar</button></div>
     <div class="list">${recv.length ? recv.map(r => personRow(r, 'recv')).join('') : '<p class="empty">Ninguém por enquanto.</p>'}</div></section>`;
   return h;
+}
+/* Câmbio do projeto: quanto comprou, quanto já gastou em espécie e quanto ainda tem */
+function fxHTML(p) {
+  const fx = [...(p.fx || [])].sort((a, b) => (b.date || '').localeCompare(a.date || '')), curs = [...new Set(fx.map(f => f.cur))];
+  const head = `<section class="block"><div class="block-head"><h2>Dinheiro da viagem</h2><button class="link" data-act="newFx" data-pid="${p.id}">Fazer câmbio</button></div>`;
+  if (!fx.length) return head + `<p class="note" style="margin-top:0">Quando trocar reais por outra moeda (ex.: ienes), anote aqui. Sai da sua conta no mês e vira dinheiro disponível na viagem.</p></section>`;
+  return head + `<div class="kvs" style="margin-top:0">${curs.map(c => { const bought = fx.filter(f => f.cur === c).reduce((a, f) => a + f.amt, 0),
+      spent = (p.items || []).filter(x => (x.cur || p.currency) === c && !x.cardId).reduce((a, x) => a + (x.amt || 0), 0), left = bought - spent;
+      return `<div class="kv"><span>Disponível em ${curName(c).toLowerCase()}</span><b class="${left < 0 ? 'bad' : ''}">${fmtCur(left, c)}</b></div>
+        <p class="note" style="margin:-6px 0 8px">Comprou ${fmtCur(bought, c)}, gastou ${fmtCur(spent, c)} em espécie. Cotação média: R$ ${String(Math.round(fxRate(p, c) * 10000) / 10000).replace('.', ',')}.</p>`; }).join('')}</div>
+    <div class="list">${fx.map(f => `<div class="item" data-type="fx" data-id="${f.id}"><span class="tick" style="visibility:hidden"></span><div class="item-text" data-act="edit" role="button" tabindex="0">
+      <div class="item-name"><span class="nm">Câmbio ${esc(f.note || '')}</span></div><div class="item-sub"><span>${fmtDate(f.date)}</span><span>Saiu ${fmt(f.brl)}</span></div></div>
+      <div class="item-val good">+ ${fmtCur(f.amt, f.cur)}</div></div>`).join('')}</div>
+    <p class="note">Gastos em ${curs.map(curName).join(', ').toLowerCase()} sem cartão saem desse dinheiro (não contam de novo no mês).</p></section>`;
 }
 /* Me devem e Eu devo: uma linha por dívida, com as parcelas */
 function personRow(r, kind) {
@@ -1275,6 +1335,104 @@ function openMove(p, dir, mv) {
     onDelete: mv ? () => deleteItem('move', mv.id) : null });
 }
 
+/* =========================================================
+   NOVA TRANSAÇÃO: escolher o tipo
+   ========================================================= */
+const TX = [['out', ICON.save, 'Gasto', 'Conta, compra ou parcela (pode ser no cartão)'], ['in', ICON.open, 'Entrada', 'Salário, honorários, qualquer dinheiro que entra'],
+  ['aporte', ICON.piggy, 'Aporte numa reserva', 'Tira da sua conta e põe numa caixinha'], ['cpay', ICON.card, 'Antecipar fatura', 'Pagou parte da fatura antes de fechar'],
+  ['estorno', ICON.open, 'Estorno', 'Compra cancelada que volta para você'], ['fx', ICON.trip, 'Câmbio para viagem', 'Trocou reais por outra moeda (ex.: ienes)'],
+  ['pay', ICON.hand, 'Eu devo', 'Pagar alguém, à vista ou parcelado'], ['recv', ICON.hand, 'Me devem', 'Alguém vai te pagar']];
+function openNew() {
+  openSheet({ title: 'Anotar', noSave: true, body: `<div class="menu" style="margin-top:6px">${TX.map(([v, ic, t, sub]) => mi({ attrs: `data-act="newTx" data-v="${v}"`, icon: ic, title: t, sub, chev: true })).join('')}</div>` });
+}
+function newTx(v) {
+  if (v === 'out' || v === 'in') return openItem({ mode: v });
+  if (v === 'aporte') return openAporte();
+  if (v === 'cpay') { if (!S.cards.length) { closeSheet(); toast('Cadastre um cartão primeiro'); return go('cards'); } return openCardPay(); }
+  if (v === 'estorno') return openEstorno();
+  if (v === 'fx') { if (!S.projects.length) { closeSheet(); toast('Crie o projeto da viagem primeiro'); return go('projects'); } return openFx(); }
+  if (v === 'pay' || v === 'recv') return openPerson(v);
+}
+/* Aporte: escolhe a reserva, sai da conta e entra na reserva */
+function openAporte() {
+  const L = S.provisions || [];
+  if (!L.length) { closeSheet(); toast('Crie uma reserva primeiro'); return go('prov'); }
+  let pid = L[0].id;
+  const body = `<p class="sub-h">Em qual reserva</p>${chips('f-prov', L.map(p => ({ v: p.id, label: esc(p.name), pre: G.piggy })), pid, 'Reserva')}
+    ${moneyInput('f-amount', 0, 'BRL', 'Valor')}
+    ${field('f-date', 'Quando', todayISO(), '', { type: 'date' })}${field('f-note', 'Observação (opcional)', '', 'Ex.: Sobrou do mês', { cap: true })}
+    <p class="note">Sai da sua conta (aparece como saída no mês) e soma na reserva.</p>`;
+  openSheet({ title: 'Aporte', body, canSave: sh => getC(sh) > 0,
+    onMount(sh) { onChips(sh, 'f-prov', v => { pid = v; }); },
+    onSave(sh) { const p = provById(pid); p.moves = p.moves || []; p.moves.push({ id: uid(), cents: getC(sh), date: $('#f-date', sh).value || todayISO(), note: $('#f-note', sh).value.trim() || 'Aporte' });
+      commit(); toast(`Guardado em ${p.name}`); } });
+}
+/* Antecipar fatura: paga agora uma parte da fatura de um mês que ainda vai fechar */
+function openCardPay(it, cardId) {
+  let cid = it ? it.cardId : (cardId || S.cards[0].id), fat = it ? it.fatura : openFatura(cardById(cid));
+  const months = () => { const base = openFatura(cardById(cid)); return [...new Set([addMonths(base, -1), base, addMonths(base, 1), addMonths(base, 2), fat])].sort(); };
+  const body = `<p class="sub-h">Cartão</p>${chips('f-card', S.cards.map(c => ({ v: c.id, label: esc(c.name), pre: `<i class="dot" style="background:${esc(c.color)}"></i>` })), cid, 'Cartão')}
+    ${moneyInput('f-amount', it ? it.cents : 0, 'BRL', 'Valor')}
+    ${field('f-date', 'Quando pagou', it ? it.date : todayISO(), '', { type: 'date' })}
+    <p class="sub-h">Da fatura de</p><div id="f-fatbox"></div>
+    <p class="note">Sai da sua conta no dia em que pagou e diminui a fatura daquele mês.</p>`;
+  openSheet({ title: 'Antecipar fatura', body, canSave: sh => getC(sh) > 0,
+    onMount(sh) {
+      const draw = () => { $('#f-fatbox', sh).innerHTML = chips('f-fat', months().map(m => ({ v: m, label: monthName(m) + (parseKey(m).y !== parseKey(todayKey()).y ? ' ' + parseKey(m).y : '') })), fat, 'Fatura'); onChips(sh, 'f-fat', v => { fat = v; }); };
+      onChips(sh, 'f-card', v => { cid = v; if (!it) fat = openFatura(cardById(cid)); draw(); }); draw();
+    },
+    onSave(sh) { const data = { cardId: cid, cents: getC(sh), date: $('#f-date', sh).value || todayISO(), fatura: fat };
+      S.cardPays = S.cardPays || []; if (it) Object.assign(it, data); else S.cardPays.push({ id: uid(), ...data });
+      commit(); toast(`Fatura de ${monthName(fat).toLowerCase()} diminuiu ${fmt(data.cents)}`); },
+    onDelete: it ? () => deleteItem('cpay', it.id) : null });
+}
+/* Estorno: compra cancelada. No cartão, diminui a fatura; sem cartão, é dinheiro que volta */
+function openEstorno(it, type) {
+  let cid = it ? it.cardId || '' : (S.cards[0] ? S.cards[0].id : '');
+  const mk = it ? Object.keys(S.months).find(k => (type === 'income' ? month(k).incomes : month(k).bills).includes(it)) : null;
+  const d0 = it ? (mk || todayKey()) + '-' + pad(it.day || 1) : todayISO();
+  const body = `${moneyInput('f-amount', it ? it.cents : 0, 'BRL', 'Valor')}
+    ${field('f-name', 'O que foi cancelado', it ? it.name.replace(/^Estorno: /, '') : '', 'Ex.: Tênis', { cap: true })}
+    ${S.cards.length ? `<p class="sub-h">Em qual cartão</p>${chips('f-card', [{ v: '', label: 'Não foi no cartão' }, ...S.cards.map(c => ({ v: c.id, label: esc(c.name), pre: `<i class="dot" style="background:${esc(c.color)}"></i>` }))], cid, 'Cartão')}` : ''}
+    ${field('f-date', 'Quando', d0, '', { type: 'date' })}
+    <p class="note">No cartão, o estorno diminui a fatura. Sem cartão, entra como dinheiro de volta.</p>`;
+  openSheet({ title: 'Estorno', body, canSave: sh => getC(sh) > 0,
+    onMount(sh) { onChips(sh, 'f-card', v => { cid = v; }); },
+    onSave(sh) {
+      const date = $('#f-date', sh).value || todayISO(), m = date.slice(0, 7), day = +date.slice(8, 10), name = 'Estorno: ' + ($('#f-name', sh).value.trim() || 'compra cancelada');
+      const id = it ? it.id : uid(); if (it) removeItem(type, it.id);
+      if (cid) month(m, true).bills.push({ id, kind: 'estorno', name, cents: getC(sh), cardId: cid, day, paid: true, cat: 'financeiro' });
+      else month(m, true).incomes.push({ id, kind: 'estorno', name, cents: getC(sh), day, received: true, cat: validCat('outras_in', 'in') });
+      commit(); toast('Estorno anotado');
+    },
+    onDelete: it ? () => deleteItem(type, it.id) : null });
+}
+/* Câmbio: saiu X reais, entrou Y na moeda da viagem */
+function openFx(p, it) {
+  let pid = p ? p.id : S.projects[0].id;
+  const curOf = () => { const pr = projById(pid); return it ? it.cur : (pr.currency !== 'BRL' ? pr.currency : 'JPY'); };
+  let cur = curOf();
+  const body = `${!p ? `<p class="sub-h">Projeto</p>${chips('f-proj', S.projects.map(x => ({ v: x.id, label: esc(x.name) })), pid, 'Projeto')}` : ''}
+    <label class="f"><span>Saiu da sua conta (reais)</span>${moneyInput('f-brl', it ? it.brl : 0, 'BRL', 'Reais')}</label>
+    <p class="sub-h">Moeda que você recebeu</p>${chips('f-cur', CURS.filter(c => c[0] !== 'BRL').map(([c, n]) => ({ v: c, label: n })), cur, 'Moeda').replace('class="chips"', 'class="chips scroll"')}
+    <label class="f"><span>Entrou na viagem</span>${moneyInput('f-amt', it ? it.amt : 0, cur, 'Valor recebido')}</label>
+    <p class="f-hint" id="f-hint"></p>
+    ${field('f-date', 'Quando', it ? it.date : todayISO(), '', { type: 'date' })}${field('f-note', 'Onde trocou (opcional)', it ? it.note || '' : '', 'Ex.: Wise, casa de câmbio', { cap: true })}`;
+  openSheet({ title: 'Câmbio', body, canSave: sh => getC(sh, 'f-brl') > 0 && getC(sh, 'f-amt') > 0,
+    onMount(sh) {
+      const hint = () => { const b = getC(sh, 'f-brl'), a = getC(sh, 'f-amt'); $('#f-hint', sh).textContent = b && a ? `Cotação: 1 ${curName(cur).toLowerCase()} = R$ ${String(Math.round(b / 100 / (a / Math.pow(10, decOf(cur))) * 10000) / 10000).replace('.', ',')}` : ''; };
+      onChips(sh, 'f-proj', v => { pid = v; }); onChips(sh, 'f-cur', v => { cur = v; const a = $('#f-amt', sh); a.dataset.cur = v; setC(a, 0); hint(); SH.refresh(); });
+      sh.addEventListener('input', hint); hint();
+    },
+    onSave(sh) {
+      const pr = projById(pid), data = { brl: getC(sh, 'f-brl'), amt: getC(sh, 'f-amt'), cur, date: $('#f-date', sh).value || todayISO(), note: $('#f-note', sh).value.trim() };
+      if (it) { const old = projOfFx(it.id); if (old && old.id !== pid) { old.fx = old.fx.filter(x => x.id !== it.id); pr.fx = pr.fx || []; pr.fx.push(it); } Object.assign(it, data); }
+      else { pr.fx = pr.fx || []; pr.fx.push({ id: uid(), ...data }); }
+      commit(); toast(`Câmbio anotado: ${fmtCur(data.amt, cur)}`);
+    },
+    onDelete: it ? () => deleteItem('fx', it.id) : null });
+}
+
 /* Valor estimado: quando a conta chega, confirma o valor certo */
 function openRealValue(type, id) {
   const it = findItem(type, id), isIn = type === 'income';
@@ -1434,12 +1592,12 @@ function openSheet(o) {
   if (SH) { SH.w.remove(); SH = null; }
   const w = document.createElement('div'); w.className = 'sheet-wrap';
   w.innerHTML = `<div class="scrim" data-sheet="close"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(o.title)}">
-    <header class="sheet-head"><button data-sheet="close">Cancelar</button><h2>${esc(o.title)}</h2><button class="ok" data-sheet="save">Salvar</button></header>
-    <div class="sheet-body">${o.body}<button class="btn primary" data-sheet="save">Salvar</button>${o.onDelete ? '<button class="btn plain" data-sheet="delete">Apagar</button>' : ''}</div></div>`;
+    <header class="sheet-head"><button data-sheet="close">Cancelar</button><h2>${esc(o.title)}</h2>${o.noSave ? '<span style="min-width:80px"></span>' : '<button class="ok" data-sheet="save">Salvar</button>'}</header>
+    <div class="sheet-body">${o.body}${o.noSave ? '' : '<button class="btn primary" data-sheet="save">Salvar</button>'}${o.onDelete ? '<button class="btn plain" data-sheet="delete">Apagar</button>' : ''}</div></div>`;
   document.body.appendChild(w); document.documentElement.classList.add('locked');
   const sheet = w.querySelector('.sheet'); SH = { ...o, w, sheet };
   SH.refresh = () => { const can = o.canSave ? !!o.canSave(sheet) : true; w.querySelectorAll('[data-sheet="save"]').forEach(b => { b.disabled = !can; }); };
-  w.addEventListener('input', () => SH && SH.refresh());
+  w.addEventListener('input', () => setTimeout(() => SH && SH.refresh(), 0));   /* depois de o campo de dinheiro se atualizar */
   w.addEventListener('click', () => setTimeout(() => SH && SH.refresh(), 0));
   w.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); e.target.blur(); } });
   if (o.onMount) o.onMount(sheet);
@@ -1723,7 +1881,8 @@ function openProject(p) {
     <div id="f-budbox">${moneyField('f-budget', 'Quanto planeja gastar (opcional)', st.budget, st.currency, true)}</div>
     ${moreBlock(`<p class="sub-h">Foto</p><div id="f-coverprev"></div>
       <div class="btn-row"><label class="btn soft">${ICON.image}<span>Escolher foto</span><input type="file" id="f-photo" class="vh" accept="image/*"></label><button type="button" class="btn soft" id="f-nophoto">Sem foto</button></div>
-      ${swRow('f-count', 'Somar estes gastos no mês', st.count !== false)}`)}`;
+      ${swRow('f-count', 'Somar estes gastos no mês', st.count !== false)}
+      ${swRow('f-cdebts', 'Contar o que eu devo a pessoas como gasto do projeto', st.countDebts !== false)}`)}`;
   openSheet({ title: p ? 'Mudar projeto' : 'Novo projeto', body,
     canSave: sh => $('#f-name', sh).value.trim().length > 0 && used().every(c => parseDecimal(($('#f-rate-' + c, sh) || {}).value) > 0),
     onMount(sh) {
@@ -1740,7 +1899,7 @@ function openProject(p) {
     },
     onSave(sh) {
       sh.querySelectorAll('[id^="f-rate-"]').forEach(i => { st.rates[i.id.slice(7)] = parseDecimal(i.value); });
-      const data = { name: $('#f-name', sh).value.trim(), currency: st.currency, rates: st.rates, rate: st.currency === 'BRL' ? 1 : st.rates[st.currency], budget: getC(sh, 'f-budget'), cover: st.cover, color: st.color || PROJ_COLORS[0], count: $('#f-count', sh).checked };
+      const data = { name: $('#f-name', sh).value.trim(), currency: st.currency, rates: st.rates, rate: st.currency === 'BRL' ? 1 : st.rates[st.currency], budget: getC(sh, 'f-budget'), cover: st.cover, color: st.color || PROJ_COLORS[0], count: $('#f-count', sh).checked, countDebts: $('#f-cdebts', sh).checked };
       if (p) { (p.items || []).forEach(x => { if (!x.cur) x.cur = p.currency; }); Object.assign(p, data); }   /* cada gasto guarda a própria moeda */
       else S.projects.push({ id: uid(), items: [], ...data });
       commit(); toast(p ? 'Mudança salva' : 'Projeto criado');
@@ -1957,17 +2116,20 @@ function fabAction() {
   if (p === 'recv') return openPerson('recv');
   if (p === 'pay') return openPerson('pay');
   if (p === 'debts') return openDebt();
-  if (ui.tab === 'home') ui.view = todayKey();
-  return openItem({ mode: ui.tab === 'mes' && ui.list === 'in' ? 'in' : 'out' });
+  if (ui.tab === 'home') ui.view = homeKey();
+  return openNew();
 }
 function editAny(type, id) {
   const it = findItem(type, id); if (!it) return;
   if (type === 'recv' || type === 'pay') return openPerson(type, { item: it });
   if (type === 'move') { const pv = provOfMove(id); return pv && openMove(pv, null, it); }
+  if (type === 'fx') return openFx(projOfFx(id), it);
+  if (type === 'cpay') return openCardPay(it);
+  if (it.kind === 'estorno') return openEstorno(it, type);
   if (type === 'debt') return openDebt(it);
   if (type === 'pitem') return openProjItem(projOfItem(id), it);
   if (type === 'prov') return openProv(it);
-  if (ui.tab === 'home') ui.view = todayKey();
+  if (ui.tab === 'home') ui.view = homeKey();
   openItem({ item: it, itemType: type });
 }
 document.addEventListener('click', e => {
@@ -2025,6 +2187,10 @@ document.addEventListener('click', e => {
     case 'editProj': openProject(projById(el.dataset.id)); break;
     case 'newRecv': openPerson('recv', { projectId: el.dataset.pid }); break;
     case 'newPay': openPerson('pay', { projectId: el.dataset.pid }); break;
+    case 'showCur': S.prefs = S.prefs || {}; S.prefs.showCur = el.dataset.v === '1' ? todayKey() : null; commit(); break;
+    case 'newTx': newTx(el.dataset.v); break;
+    case 'newFx': openFx(projById(el.dataset.pid)); break;
+    case 'cardPay': openCardPay(null, el.dataset.id); break;
     case 'debtSort': S.debtSort = el.dataset.v; commit(); break;
     case 'fcMonths': S.prefs = S.prefs || {}; S.prefs.fcMonths = +el.dataset.v; commit(); break;
     case 'editCat': openCat(catById(el.dataset.id)); break;
@@ -2042,7 +2208,7 @@ document.addEventListener('click', e => {
     case 'paidFaturaOld': { const c = cardById(el.dataset.id); if (c) { c.paidFatura = c.paidFatura || {}; if (el.checked) c.paidFatura[ui.view] = true; else delete c.paidFatura[ui.view]; save(); clearTimeout(rt); rt = setTimeout(render, 250); } break; }
     case 'edit': editAny(type, id); break;
     case 'toggle': {
-      if (ui.tab === 'home') ui.view = todayKey();
+      if (ui.tab === 'home') ui.view = homeKey();
       { const it0 = findItem(type, id); if (it0 && it0.estimate && (type === 'bill' || type === 'income') && !(type === 'bill' ? it0.paid : it0.received)) { openRealValue(type, id); break; } }
       const before = monthTotals(ui.view);
       el.classList.toggle('on'); el.setAttribute('aria-pressed', String(el.classList.contains('on')));
@@ -2087,7 +2253,7 @@ document.addEventListener('change', e => {
 /* =========================================================
    ARRASTAR PARA A ESQUERDA PARA APAGAR
    ========================================================= */
-const SWIPE_TYPES = new Set(['bill', 'income', 'inst', 'sub', 'recv', 'pay', 'debt', 'pitem', 'move']);
+const SWIPE_TYPES = new Set(['bill', 'income', 'inst', 'sub', 'recv', 'pay', 'debt', 'pitem', 'move', 'fx', 'cpay']);
 let sw = null, swOpen = null, swJust = 0;
 function swClose() { if (swOpen) { swOpen.style.transform = ''; swOpen = null; } }
 function swPrep(row) {
