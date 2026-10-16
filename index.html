@@ -2191,7 +2191,14 @@ function migrate() {
    CONTA NA NUVEM (Firebase): seus dados guardados na sua conta
    ========================================================= */
 /* Cole aqui a configuração do seu projeto Firebase (ou cole dentro do app, em Mais > Conta na nuvem) */
-const FIREBASE_CONFIG = null;
+const FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyBo9lXseQHAf-VhLO9b9wN0oaSvXah1IpA',
+  authDomain: 'minhas-contas-8f637.firebaseapp.com',
+  projectId: 'minhas-contas-8f637',
+  storageBucket: 'minhas-contas-8f637.firebasestorage.app',
+  messagingSenderId: '499268799535',
+  appId: '1:499268799535:web:3f33688f58834c39b10ada',
+};
 const CLOUD_KEY = 'minhas-contas-nuvem', CLOUD_UID = 'minhas-contas-nuvem-uid';
 let cloud = null, cloudMsg = '', cloudBusy = false, pushTimer = null, pulling = false;
 function cloudConf() { try { const c = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (c) return c; } catch (e) {} return FIREBASE_CONFIG; }
