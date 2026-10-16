@@ -203,7 +203,8 @@ html[data-theme="escuro"] .seg button[aria-pressed="true"]{background:#3A3A3C}
 .mi .mi-t{flex:1;min-width:0}
 .mi .mi-s,.switch-row .mi-s{display:block;font-size:13px;color:var(--muted)}
 .mi .mi-v{color:var(--muted);font-family:var(--num);font-variant-numeric:tabular-nums;font-size:15px;white-space:nowrap}
-.mi .chev{width:14px;height:14px;color:var(--faint);flex:none}
+.chev{width:14px;height:14px;color:var(--faint);flex:none}
+.mrow .chev{margin-left:4px;align-self:center}
 .mi.danger{color:var(--bad)} .mi.danger svg.ic{color:var(--bad)}
 
 /* Cartões e projetos */
@@ -2160,10 +2161,17 @@ function billsToCards() {
   [['Meu Nubank', '#8A05BE'], ['Nubank Bela', '#B24BF3'], ['Itaúcard', '#EC7000']].forEach(([name, color]) => {
     const bills = Object.values(S.months).flatMap(m => m.bills || []).filter(b => norm(b.name) === norm(name) && !b.cardId);
     if (!bills.length) return;
-    let c = S.cards.find(x => norm(x.name) === norm(name));
+    let c = S.cards.find(x => norm(x.name) === norm(name)) || (name === 'Meu Nubank' && S.cards.find(x => norm(x.name) === 'nubank'));
     if (!c) { c = { id: uid(), name, color, limit: 0, last4: '', paidFatura: {} }; S.cards.push(c); }
     bills.forEach(b => { b.cardId = c.id; b.cardBase = true; });
   });
+}
+/* Se você já tinha um cartão "Nubank", o "Meu Nubank" criado sozinho vira esse mesmo cartão */
+function mergeAutoCards() {
+  const auto = S.cards.find(c => norm(c.name) === 'meu nubank' && !c.limit && !c.closeDay && !c.dueDay), mine = S.cards.find(c => norm(c.name) === 'nubank');
+  if (!auto || !mine) return;
+  [...Object.values(S.months).flatMap(m => m.bills || []), ...S.installments, ...S.subs, ...S.projects.flatMap(p => p.items || [])].forEach(x => { if (x.cardId === auto.id) x.cardId = mine.id; });
+  S.cards = S.cards.filter(c => c.id !== auto.id);
 }
 function migrate() {
   S.payables = S.payables || []; S.provisions = S.provisions || [];
@@ -2174,6 +2182,7 @@ function migrate() {
   if (!S.japanFixed) { japanToPayables(); S.japanFixed = true; }
   if (!S.investSeeded) { seedInvest(); S.investSeeded = true; }
   if (!S.cardsFixed) { billsToCards(); S.cardsFixed = true; }
+  if (!S.cardsMerged) { mergeAutoCards(); S.cardsMerged = true; }
   if ((S.v || 0) < 4) S.v = 4;
 }
 
