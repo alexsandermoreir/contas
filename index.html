@@ -2571,7 +2571,9 @@ document.addEventListener('touchend', e => {
     e.preventDefault(); t.blur(); t.focus();
   }
 }, { passive: false });
-/* Campo de dinheiro: você digita só números e ele vira R$ na hora */
+/* Campo de dinheiro: você digita só números e ele vira R$ (ou ¥, ₩…) na hora.
+   Roda ANTES de qualquer outra coisa (fase de captura), para que somas e cotações
+   já usem o número com o último dígito digitado. */
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.classList && t.classList.contains('money')) {
@@ -2579,7 +2581,7 @@ document.addEventListener('input', e => {
     setC(t, parseInt(digits || '0', 10));
     requestAnimationFrame(() => { try { t.setSelectionRange(t.value.length, t.value.length); } catch (_) {} });
   }
-});
+}, true);
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.closest && t.closest('.monthpick') && /^\d{4}-\d{2}$/.test(t.value)) { ui.view = t.value; render(); }
@@ -2885,7 +2887,7 @@ lowerNode(document.body);
    ATUALIZAR SOZINHO: o iPhone guarda uma cópia do app.
    Ao abrir (ou voltar para o app), confere se existe versão nova e recarrega.
    ========================================================= */
-const APP_VERSION = '2026-10-20.4';
+const APP_VERSION = '2026-10-20.5';
 async function checkUpdate() {
   if (SH) return;   /* não recarrega no meio de uma anotação */
   try {
