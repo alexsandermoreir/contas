@@ -94,3 +94,14 @@ const chip = (doc, box, v) => doc.querySelector(`#${box} .chip[data-v="${v}"]`).
 }
 console.log(`viagem-e-formulario.test.js: ${pass} passaram, ${fail} falharam`); if (fail) process.exitCode = 1;
 })();
+
+/* Cotação: no máximo 4 algarismos (1 iene = R$ 0,03288) */
+(() => {
+  const H2 = require('./harness'); const { ev, errs } = H2.boot({ state: H2.estado() }); const t = H2.suite('cotacao');
+  t.ok(ev(`rateTxt(0.032881234)`) === '0,03288', 'Mostra 0,03288: ' + ev(`rateTxt(0.032881234)`));
+  t.ok(ev(`rateTxt(5.43219)`) === '5,432', 'Dólar: 5,432');
+  ev(`S.projects[0].rates = { JPY: 0.032881234 }; migrate();`);
+  t.ok(ev(`S.projects[0].rates.JPY`) === 0.03288, 'Cotação guardada também fica com 4 algarismos');
+  t.ok(!errs.length, 'Sem erros: ' + errs.join(';'));
+  t.end();
+})();
