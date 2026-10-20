@@ -518,6 +518,13 @@ async function fetchRate(cur) {
   }
   return 0;
 }
+/* Moeda principal de uma viagem: a estrangeira mais usada nela (ou a moeda do projeto) */
+function tripCur(p) {
+  const n = new Map(); const add = c => { if (c && c !== 'BRL') n.set(c, (n.get(c) || 0) + 1); };
+  add(p.currency); Object.keys(p.rates || {}).forEach(add); (p.items || []).forEach(x => add(x.cur)); (p.fx || []).forEach(f => add(f.cur));
+  (S.payables || []).concat(S.receivables).filter(r => r.projectId === p.id).forEach(r => add(r.cur));
+  return [...n.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0])[0] || p.currency || 'BRL';
+}
 /* Pessoas que você já anotou (com a chave PIX mais recente de cada uma) */
 function knownPeople() {
   const m = new Map();
@@ -1582,7 +1589,7 @@ function openFx(p, it) {
     ${field('f-date', 'Quando', it ? it.date : todayISO(), '', { type: 'date' })}${field('f-note', 'Onde trocou (opcional)', it ? it.note || '' : '', 'Ex.: Wise, casa de câmbio', { cap: true })}`;
   openSheet({ title: 'Câmbio', body, canSave: sh => getC(sh, 'f-brl') > 0 && getC(sh, 'f-amt') > 0,
     onMount(sh) {
-      const hint = () => { const b = getC(sh, 'f-brl'), a = getC(sh, 'f-amt'); $('#f-hint', sh).textContent = b && a ? `Cotação: 1 ${curName(cur).toLowerCase()} = R$ ${String(Math.round(b / 100 / (a / Math.pow(10, decOf(cur))) * 10000) / 10000).replace('.', ',')}` : ''; };
+      const hint = () => { const b = getC(sh, 'f-brl'), a = getC(sh, 'f-amt'); $('#f-hint', sh).textContent = b && a ? `Cotação: 1 ${curName(cur).toLowerCase()} = R$ ${rateTxt(b / 100 / (a / Math.pow(10, decOf(cur))))}` : ''; };
       onChips(sh, 'f-proj', v => { pid = v; }); onChips(sh, 'f-cur', v => { cur = v; const a = $('#f-amt', sh); a.dataset.cur = v; setC(a, 0); hint(); SH.refresh(); });
       sh.addEventListener('input', hint); hint();
     },
@@ -2144,7 +2151,7 @@ function openTripItem(p, o = {}) {
   /* quem pagou: 'me' ou o nome da pessoa ('?' = pessoa nova) */
   let who = pay ? pay.person : (o.who || 'me');
   let cardId = it ? it.cardId || '' : '';
-  let cur = it ? (it.cur || p.currency) : pay ? (pay.cur || 'BRL') : (p.lastCur || ((p.items || []).length ? (p.items[p.items.length - 1].cur || p.currency) : p.currency));
+  let cur = it ? (it.cur || p.currency) : pay ? (pay.cur || 'BRL') : (p.lastCur || tripCur(p));
   let rate = it ? (it.rate || rateOf(p, cur)) : pay ? (pay.rate || rateOf(p, cur)) : rateOf(p, cur);
   let cat = edit ? validCat(edit.cat || (it ? itemCat(it, 'viagem') : 'viagem'), 'out', 'viagem') : 'viagem', catManual = !!(edit && edit.cat);
   const N0 = pay ? parcelsOf(pay) : 1;
@@ -2153,7 +2160,7 @@ function openTripItem(p, o = {}) {
   const nextK = addMonths(todayKey(), 1);
   let payK = pay ? (pay.start || todayKey()) : nextK;
   const curOrder = [...new Set(['BRL', p.currency, ...(p.items || []).map(x => x.cur || p.currency), ...(S.payables || []).filter(r => r.projectId === p.id).map(r => r.cur || 'BRL'), ...CURS.map(c => c[0])])];
-  const monthsOpt = [-1, 0, 1, 2, 3].map(i => addMonths(todayKey(), i)).concat(payK).filter((v, i, a) => a.indexOf(v) === i).sort();
+  const monthsOpt = [0, 1, 2, 3, 4].map(i => addMonths(todayKey(), i)).concat(payK).filter((v, i, a) => a.indexOf(v) === i).sort();
   const body = `<p class="sub-h" style="margin-top:4px">Moeda</p>${chips('f-curr', curOrder.map(c => ({ v: c, label: c === 'BRL' ? 'Real' : curName(c) })), cur, 'Moeda').replace('class="chips"', 'class="chips scroll"')}
     ${moneyInput('f-amount', amt0, cur, 'Valor')}<p class="f-hint" id="f-hint"></p>
     <div id="f-ratebox"></div>
@@ -2244,7 +2251,12 @@ function openPerson(kind, o = {}) {
   const people = [], seen = new Set();
   [...S.receivables, ...(S.payables || [])].forEach(r => { const n = norm(r.person); if (n && !seen.has(n)) { seen.add(n); people.push({ name: r.person, pix: r.pix }); } });
   const curN = it && parc && it.start ? Math.min(parcelsOf(it), Math.max(1, diffMonths(it.start, k) + 1)) : 1;
-  const body = `${moneyInput('f-amount', it ? it.cents : 0, 'BRL', 'Valor')}<p class="f-hint" id="f-hint"></p>
+  /* moeda: em viagem dá para anotar em iene, won etc. (vira reais pela cotação) */
+  const projNow = () => projectId && projById(projectId);
+  let cur = it ? (it.cur || 'BRL') : (projNow() ? tripCur(projNow()) : 'BRL');
+  let rate = it && it.rate ? it.rate : (projNow() ? rateOf(projNow(), cur) : 0);
+  const amt0 = it ? (cur !== 'BRL' && it.amt ? Math.round(it.amt / parcelsOf(it)) : it.cents) : 0;
+  const body = `<div id="f-curbox"></div>${moneyInput('f-amount', amt0, cur, 'Valor')}<p class="f-hint" id="f-hint"></p><div id="f-ratebox"></div>
     ${field('f-person', isPay ? 'Para quem você deve' : 'Quem te deve', it ? it.person : '', 'Ex.: Igor', { cap: true })}<div class="sug" id="f-psug"></div>
     ${field('f-desc', 'Pelo quê', it ? it.desc : '', isPay ? 'Ex.: Hospedagem em Kyoto' : 'Ex.: Metade do hotel', { cap: true })}
     ${swRow('f-parc', 'Parcelado', parc)}
@@ -2255,7 +2267,7 @@ function openPerson(kind, o = {}) {
       ${S.projects.length ? `<p class="sub-h">Faz parte de</p>${chips('f-proj', [{ v: '', label: 'Nenhum projeto' }, ...S.projects.map(p => ({ v: p.id, label: esc(p.name) }))], projectId, 'Projeto')}` : ''}`)}`;
   const nums = sh => { const c = Math.max(1, parseInt(($('#f-cur', sh) || {}).value, 10) || 1), tt = parseInt(($('#f-tot', sh) || {}).value, 10) || 0; return { c, tt }; };
   openSheet({ title: it ? 'Mudar' : (isPay ? 'Eu devo' : 'Alguém me deve'), body,
-    canSave: sh => getC(sh) > 0 && $('#f-person', sh).value.trim().length > 0 && (!parc || nums(sh).tt >= nums(sh).c),
+    canSave: sh => getC(sh) > 0 && $('#f-person', sh).value.trim().length > 0 && (!parc || nums(sh).tt >= nums(sh).c) && (cur === 'BRL' || (parseDecimal(($('#f-rate', sh) || {}).value) || rate) > 0),
     onMount(sh) {
       const drawParc = () => {
         const pdone = it ? (parc ? paidCount(it) : curN - 1) : 0;
@@ -2265,26 +2277,43 @@ function openPerson(kind, o = {}) {
           : swRow('f-done', isPay ? 'Já paguei' : 'Já recebi', it ? !!it.done : false);
         hint();
       };
-      const hint = () => { const { c, tt } = nums(sh); const e = $('#f-hint', sh);
-        e.textContent = parc && tt ? (tt < c ? 'O total precisa ser maior que a parcela deste mês.' : `${tt} × ${fmt(getC(sh))} = ${fmt(tt * getC(sh))}. Termina em ${monthName(addMonths(k, tt - c)).toLowerCase()} de ${parseKey(addMonths(k, tt - c)).y}.`) : ''; };
+      const each = () => cur === 'BRL' ? getC(sh) : toReais(getC(sh), cur, rateNow());
+      const rateNow = () => cur === 'BRL' ? 1 : (parseDecimal(($('#f-rate', sh) || {}).value) || rate || 0);
+      const hint = () => { const { c, tt } = nums(sh); const e = $('#f-hint', sh), conv = cur !== 'BRL' && getC(sh) && rateNow() ? `≈ ${fmt(each())}` : '';
+        e.textContent = parc && tt ? (tt < c ? 'O total precisa ser maior que a parcela deste mês.' : `${conv ? conv + ' cada. ' : ''}${tt} × ${fmt(each())} = ${fmt(tt * each())}. Termina em ${monthName(addMonths(k, tt - c)).toLowerCase()} de ${parseKey(addMonths(k, tt - c)).y}.`) : conv; };
+      const drawRate = () => {
+        $('#f-ratebox', sh).innerHTML = cur === 'BRL' ? '' : `${field('f-rate', `1 ${curName(cur).toLowerCase()} vale (R$)`, rate ? rateTxt(rate) : '', 'Buscando cotação…', { dec: true, help: helpBtn(HELP.cotacao) })}`;
+        if (cur !== 'BRL' && !rate) { const want = cur; fetchRate(cur).then(v => { const inp = SH && $('#f-rate', sh); if (v && inp && cur === want && !inp.value) { rate = v; inp.value = rateTxt(v); } hint(); if (SH) SH.refresh(); }); }
+      };
+      const drawCur = () => {
+        const pr = projNow(), box = $('#f-curbox', sh);
+        if (!pr && cur === 'BRL') { box.innerHTML = ''; return; }
+        const order = [...new Set(['BRL', pr ? tripCur(pr) : cur, cur, ...CURS.map(x => x[0])])];
+        box.innerHTML = `<p class="sub-h" style="margin-top:4px">Moeda</p>${chips('f-curr', order.map(c => ({ v: c, label: c === 'BRL' ? 'Real' : curName(c) })), cur, 'Moeda').replace('class="chips"', 'class="chips scroll"')}`;
+        onChips(sh, 'f-curr', v => { cur = v; rate = pr ? rateOf(pr, v) : 0; const a = $('#f-amount', sh); a.dataset.cur = v; setC(a, 0); drawRate(); hint(); SH.refresh(); });
+      };
       sh.addEventListener('change', e => { if (e.target.id === 'f-parc') { parc = e.target.checked; drawParc(); SH.refresh(); } });
       sh.addEventListener('input', hint);
-      onMore(sh); onChips(sh, 'f-proj', v => { projectId = v; }); onChips(sh, 'f-cat', v => { cat = v; });
+      onMore(sh); onChips(sh, 'f-proj', v => { projectId = v; drawCur(); }); onChips(sh, 'f-cat', v => { cat = v; });
+      drawCur(); drawRate();
       attachSuggest(sh, 'f-person', 'f-psug', knownPeople(), h => { if (h.pix && !$('#f-pix', sh).value) $('#f-pix', sh).value = h.pix; });
       sh.addEventListener('input', e => { if (e.target.id !== 'f-person') return; const k2 = personByName(e.target.value);
         if (k2 && k2.pix && !$('#f-pix', sh).value) $('#f-pix', sh).value = k2.pix; if (k2 && k2.day && !$('#f-day', sh).value) $('#f-day', sh).value = k2.day; });
       drawParc(); if (!it) focusAmount(sh);
     },
     onSave(sh) {
-      const data = { person: $('#f-person', sh).value.trim(), desc: $('#f-desc', sh).value.trim(), cents: getC(sh), pix: $('#f-pix', sh).value.trim(),
-        day: clampInt($('#f-day', sh).value, 1, 31, null), cat, projectId: projectId || undefined };
+      const r = cur === 'BRL' ? 1 : round4(parseDecimal(($('#f-rate', sh) || {}).value) || rate), typed = getC(sh);
+      const data = { person: $('#f-person', sh).value.trim(), desc: $('#f-desc', sh).value.trim(), cents: cur === 'BRL' ? typed : toReais(typed, cur, r), pix: $('#f-pix', sh).value.trim(),
+        day: clampInt($('#f-day', sh).value, 1, 31, null), cat, projectId: projectId || undefined,
+        cur: cur === 'BRL' ? undefined : cur, rate: cur === 'BRL' ? undefined : r, amt: undefined };
+      if (cur !== 'BRL' && projNow()) { projNow().rates = projNow().rates || {}; projNow().rates[cur] = r; }
       if (parc) {
         const { c } = nums(sh), tt = Math.max(c, nums(sh).tt), pn = clampInt($('#f-paidn', sh).value, 0, tt, c - 1);
-        data.parcels = tt; data.start = addMonths(k, -(c - 1)); data.paid = {};
+        data.parcels = tt; data.start = addMonths(k, -(c - 1)); data.paid = {}; if (data.cur) data.amt = typed * tt;
         for (let i = 0; i < pn; i++) data.paid[addMonths(data.start, i)] = true;
         data.done = pn >= tt;
       } else {
-        data.parcels = 1; data.paid = {}; data.done = $('#f-done', sh).checked;
+        data.parcels = 1; data.paid = {}; data.done = $('#f-done', sh).checked; if (data.cur) data.amt = typed;
         data.start = it ? (parcelsOf(it) > 1 ? addMonths(it.start, Math.min(parcelsOf(it) - 1, Math.max(0, diffMonths(it.start, k)))) : it.start) : k;
         if (!data.start) delete data.start;
       }
@@ -2833,7 +2862,15 @@ document.addEventListener('visibilitychange', () => {
    MINÚSCULAS: todo texto da tela em letras minúsculas,
    menos símbolos de moeda (R$, US$), o que você digita e o PDF
    ========================================================= */
-const lowerTxt = v => v.toLowerCase().replace(/\b(r|us|a|c|nz|hk|s)\$/g, m => m.toUpperCase());
+/* símbolos e códigos de moeda ficam como são escritos: R$, US$, JP¥, CN¥, TRY, ARS, CLP, JPY… */
+const CUR_MAP = (() => {
+  const m = new Map(); const add = t => { if (t && t.toLowerCase() !== t) m.set(t.toLowerCase(), t); };
+  ['R$', 'US$', 'A$', 'C$', 'NZ$', 'HK$', 'S$'].forEach(add);
+  CURS.forEach(([c]) => { add(c); try { curFmt(c).formatToParts(1).forEach(x => { if (x.type === 'currency') add(x.value); }); } catch (e) {} });
+  return m;
+})();
+const CUR_RE = new RegExp(`(^|[^\\p{L}])(${[...CUR_MAP.keys()].sort((a, b) => b.length - a.length).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?=$|[^\\p{L}])`, 'gu');
+const lowerTxt = v => v.toLowerCase().replace(CUR_RE, (m, pre, tok) => pre + CUR_MAP.get(tok));
 function lowerNode(root) {
   if (root.nodeType === 3) { const p = root.parentNode; if (p && !p.closest('#print,script,style,textarea')) { const v = lowerTxt(root.nodeValue); if (v !== root.nodeValue) root.nodeValue = v; } return; }
   if (root.nodeType !== 1 || root.closest('#print,script,style,textarea')) return;
@@ -2848,7 +2885,7 @@ lowerNode(document.body);
    ATUALIZAR SOZINHO: o iPhone guarda uma cópia do app.
    Ao abrir (ou voltar para o app), confere se existe versão nova e recarrega.
    ========================================================= */
-const APP_VERSION = '2026-10-20.3';
+const APP_VERSION = '2026-10-20.4';
 async function checkUpdate() {
   if (SH) return;   /* não recarrega no meio de uma anotação */
   try {
