@@ -194,6 +194,20 @@ html[data-theme="escuro"] .seg button[aria-pressed="true"]{background:#3A3A3C}
 .mrow .m-sub{display:flex;gap:12px;margin-top:2px;font-size:13px;color:var(--muted)}
 .mrow .m-val{margin-left:auto;text-align:right;font-family:var(--num);font-variant-numeric:tabular-nums;font-size:17px;font-weight:600;white-space:nowrap}
 .mrow .m-val small{display:block;font-size:12px;color:var(--muted);font-weight:400;font-family:-apple-system,sans-serif}
+.mrow.slim{min-height:52px}
+.chart .fut{fill-opacity:.4}
+.lg-fut{color:var(--faint)}
+/* Início: quadradinhos */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:24px}
+.tile{display:block;text-align:left;padding:12px 14px;border-radius:14px;background:var(--soft);min-width:0}
+.tile>span{display:block;font-size:13px;color:var(--muted)}
+.tile b{display:block;margin-top:2px;font-family:var(--num);font-variant-numeric:tabular-nums;font-size:19px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button.tile:active{opacity:.6}
+/* Gasto no cartão: cartãozinho no lugar da bolinha */
+.cardmark{flex:none;width:28px;height:28px;display:grid;place-items:center;color:var(--faint)}
+.cardmark svg{width:20px;height:20px}
+.cardmark.sm{width:18px;height:18px}.cardmark.sm svg{width:16px;height:16px}
+.note-card{display:flex;gap:8px;align-items:flex-start}
 .mrow.now .m-name::after{content:"este mês";margin-left:8px;font-size:12px;font-weight:500;color:var(--pen)}
 
 /* Menu da aba Mais */
@@ -695,9 +709,60 @@ function inItems(k) {
   provMoveItems(k).filter(o => o.isIn).forEach(o => L.push(o));
   return L.sort((a, b) => (a.done - b.done) || ((a.day || 99) - (b.day || 99)));
 }
+/* =========================================================
+   O QUE SAI DA CONTA NO MÊS: contas + uma linha por fatura
+   Gasto no cartão não é pago um por um: ele entra na fatura,
+   e a fatura aparece uma vez só, como uma conta a pagar.
+   ========================================================= */
+function faturaRows(k, L) {
+  L = L || outItems(k);
+  return S.cards.map(c => {
+    const items = L.filter(o => o.card === c.id), u = cardUsage(c, k, L);
+    if (!u.gross && !u.adv) return null;
+    /* o que você já marcou como pago dentro da fatura continua descontado */
+    const part = u.paid ? u.fatura : Math.min(u.fatura, sum(items.filter(o => o.done && !o.credit)));
+    return { type: 'fatura', it: c, name: `Fatura ${c.name}`, cents: u.fatura, paidPart: part, done: u.paid, day: c.dueDay || null, cat: validCat('financeiro', 'out', 'outros'),
+      fatura: true, est: !u.paid && items.some(o => o.est), tag: u.adv ? `Antecipado ${fmt(u.adv)}` : '' };
+  }).filter(Boolean);
+}
+function payItems(k) {
+  const L = outItems(k);
+  const own = L.filter(o => !(o.card && cardById(o.card)) && !(o.type === 'cpay' && o.credit));
+  return [...own, ...faturaRows(k, L)].sort((a, b) => (a.done - b.done) || ((a.day || 99) - (b.day || 99)));
+}
+/* Marca (ou desmarca) como pago tudo o que está na fatura do cartão no mês k */
+function setFaturaPaid(id, k, on) {
+  let n = 0;
+  cardItems(id, k).forEach(o => {
+    if (o.type === 'bill') { if (!!o.it.paid !== on) n++; o.it.paid = on; }
+    else if (o.type === 'inst' || o.type === 'sub') { o.it.paid = o.it.paid || {}; if (!!o.it.paid[k] !== on) n++; if (on) o.it.paid[k] = true; else delete o.it.paid[k]; }
+  });
+  return n;
+}
+/* Gastos feitos no cartão NESTE mês, pelo dia da compra.
+   Só para ver: não têm bolinha, porque quem paga é a fatura (às vezes a do mês seguinte). */
+function cardSpends(k) {
+  const L = [];
+  const add = (o, c, day) => L.push({ ...o, card: c.id, day: day || null, fixed: true, done: false, spend: true, fat: faturaMonth(c, k, day) });
+  month(k).bills.forEach(b => {
+    const c = b.cardId && cardById(b.cardId); if (!c || b.cardBase) return;
+    const cr = b.kind === 'estorno';
+    add({ type: 'bill', it: b, name: b.name, cents: cr ? -b.cents : b.cents, credit: cr, cat: cr ? validCat('financeiro', 'out', 'outros') : itemCat(b), est: !!b.estimate,
+      tag: cr ? 'Estorno' : b.kind !== 'compra' && b.recurring ? 'Todo mês' : '' }, c, b.day);
+  });
+  S.installments.forEach(i => { const c = i.cardId && cardById(i.cardId), n = instNum(i, k);
+    if (c && n >= 1 && n <= i.total) add({ type: 'inst', it: i, name: i.name, cents: i.cents, cat: itemCat(i, 'compras'), tag: `Parcela ${n} de ${i.total}` }, c, i.day); });
+  S.subs.forEach(s => { const c = s.cardId && cardById(s.cardId);
+    if (c && !(s.since && diffMonths(s.since, k) < 0)) add({ type: 'sub', it: s, name: s.name, cents: s.cents, cat: itemCat(s, 'assinaturas'), tag: 'Todo mês' }, c, s.day); });
+  S.projects.forEach(p => { if (p.count === false) return; (p.items || []).forEach(x => {
+    const c = x.cardId && cardById(x.cardId); if (!c || !x.date || x.date.slice(0, 7) !== k) return;
+    add({ type: 'pitem', it: x, name: x.desc || 'Gasto', cents: itemBRL(p, x), cat: itemCat(x, 'viagem'), tag: p.name }, c, +x.date.slice(8, 10));
+  }); });
+  return L;
+}
 function monthTotals(k) {
-  const out = outItems(k), ins = inItems(k);
-  const t = { out: sum(out), paid: sum(out.filter(o => o.done)), inc: sum(ins), rec: sum(ins.filter(x => x.done)) };
+  const out = payItems(k), ins = inItems(k);
+  const t = { out: sum(out), paid: out.reduce((a, o) => a + (o.fatura ? o.paidPart : o.done ? o.cents : 0), 0), inc: sum(ins), rec: sum(ins.filter(x => x.done)) };
   t.left = t.inc - t.out; t.toPay = t.out - t.paid; t.toGet = t.inc - t.rec;
   t.estPay = out.some(o => o.est && !o.done); t.estGet = ins.some(x => x.est && !x.done); t.estAny = out.some(o => o.est) || ins.some(x => x.est);
   return t;
@@ -721,8 +786,8 @@ function forecastTotals(k) {
   } finally { S.months = saved; }
 }
 function cardItems(id, k) { return outItems(k).filter(o => o.card === id); }
-function cardUsage(c, k) {
-  const items = cardItems(c.id, k), gross = sum(items), real = items.filter(o => !o.credit);
+function cardUsage(c, k, L) {
+  const items = (L || outItems(k)).filter(o => o.card === c.id), gross = sum(items), real = items.filter(o => !o.credit);
   const adv = (S.cardPays || []).filter(x => x.cardId === c.id && x.fatura === k).reduce((a, x) => a + x.cents, 0);
   const fatura = Math.max(0, gross - adv), paid = (gross > 0 && fatura === 0) || (real.length > 0 && real.every(o => o.done));   /* fatura paga = todos os gastos dela pagos */
   /* parcelas que vão cair em faturas depois desta */
@@ -752,6 +817,7 @@ function findItem(type, id) {
     case 'debt': return S.debts.find(x => x.id === id);
     case 'pitem': return S.projects.flatMap(p => p.items || []).find(x => x.id === id);
     case 'prov': return (S.provisions || []).find(x => x.id === id);
+    case 'fatura': return cardById(id);
   }
 }
 const projOfItem = id => S.projects.find(p => (p.items || []).some(x => x.id === id));
@@ -783,6 +849,7 @@ function deleteItem(type, id) {
 }
 function applyToggle(type, id, mk) {
   const it = findItem(type, id); if (!it) return; const k = ui.view;
+  if (type === 'fatura') { setFaturaPaid(id, k, !cardUsage(it, k).paid); return; }
   if (type === 'recv' || type === 'pay') {
     const N = parcelsOf(it);
     if (N > 1) {
@@ -826,17 +893,25 @@ function dueText(day, k, done) {
 }
 /* Uma linha da lista. Gastos de viagem não têm caixinha (já foram pagos). */
 function itemRow(o, k, inGroup) {
-  const cat = catById(o.cat);
-  const sub = [o.isIn ? (o.day ? `Dia ${o.day}` : '') : dueText(o.day, k, o.done), o.shifted || '', o.tag ? esc(o.tag) : '', !inGroup && o.type !== 'prov' ? esc(cat.label) : '', o.card && cardById(o.card) ? esc(cardById(o.card).name) : ''].filter(Boolean);
+  const cat = catById(o.cat), cc = o.card && cardById(o.card);
+  let sub;
+  if (o.spend) sub = [o.day ? `Dia ${o.day}` : '', o.fat ? `Na fatura de ${monthName(o.fat).toLowerCase()}` : '', cc ? esc(cc.name) : '', o.tag ? esc(o.tag) : '', !inGroup ? esc(cat.label) : ''];
+  else if (o.fatura) sub = [o.done ? 'Paga' : (dueText(o.day, k, false) || '').replace(/^Dia /, 'Vence dia '), o.tag ? esc(o.tag) : '', !o.done && o.paidPart ? `Já pagou ${fmt(o.paidPart)}` : ''];
+  else sub = [o.isIn ? (o.day ? `Dia ${o.day}` : '') : dueText(o.day, k, o.done), o.shifted || '', o.tag ? esc(o.tag) : '', !inGroup && o.type !== 'prov' ? esc(cat.label) : '', cc ? esc(cc.name) : ''];
+  sub = sub.filter(Boolean);
+  const partial = o.fatura && !o.done && o.paidPart > 0;
   if (o.est) sub.unshift('<span class="est-label">Valor estimado</span>');
   if (o.it && o.it.pix && !o.isIn && !o.done) sub.push(`<button class="pixbtn" data-act="copy" data-text="${esc(o.it.pix)}" aria-label="Copiar PIX de ${esc(o.name)}">Copiar PIX</button>`);
-  const label = o.type === 'prov' ? 'Marcar como guardado' : o.isIn ? 'Marcar como recebido' : 'Marcar como pago';
-  const tick = o.fixed ? '<span class="tick" style="visibility:hidden"></span>'
+  const label = o.type === 'prov' ? 'Marcar como guardado' : o.isIn ? 'Marcar como recebido' : o.fatura ? 'Marcar a fatura como paga' : 'Marcar como pago';
+  /* gasto no cartão: no lugar da bolinha, um cartãozinho (quem paga é a fatura) */
+  const tick = o.spend ? `<span class="cardmark" title="Pago com cartão">${ICON.card}</span>`
+    : o.fixed ? '<span class="tick" style="visibility:hidden"></span>'
     : `<button class="tick ${o.done ? 'on' : ''}" data-act="toggle" aria-pressed="${o.done}" aria-label="${o.done ? 'Desmarcar' : label}: ${esc(o.name)}">${ICON.tick}</button>`;
-  return `<div class="item ${o.done ? 'done' : ''}" data-type="${o.type}" data-id="${o.it.id}"${o.type === 'recv' || o.type === 'pay' ? ` data-month="${k}"` : ''}>${tick}
-    <div class="item-text" data-act="edit" role="button" tabindex="0" aria-label="Ver ou mudar ${esc(o.name)}">
-      <div class="item-name">${glyphHTML(o.name, o.cat)}<span class="nm">${esc(o.name)}</span></div>${sub.length ? `<div class="item-sub">${sub.map(x => `<span>${x}</span>`).join('')}</div>` : ''}
-    </div><div class="item-val${o.isIn ? ' good' : ''}">${o.isIn ? '+ ' : ''}${fmt(o.cents)}${o.est ? '<span class="est" aria-label="estimado">*</span>' : ''}</div></div>`;
+  const glyph = o.fatura ? `<span class="ico" style="--ic:${esc(o.it.color || '#8E8E93')}">${ICON.card}</span>` : glyphHTML(o.name, o.cat);
+  return `<div class="item ${o.done ? 'done' : ''}${o.spend ? ' spend' : ''}" data-type="${o.type}" data-id="${o.it.id}"${o.type === 'recv' || o.type === 'pay' ? ` data-month="${k}"` : ''}>${tick}
+    <div class="item-text" data-act="edit" role="button" tabindex="0" aria-label="${o.fatura ? 'Ver os gastos da' : 'Ver ou mudar'} ${esc(o.name)}">
+      <div class="item-name">${glyph}<span class="nm">${esc(o.fatura && inGroup ? o.it.name : o.name)}</span></div>${sub.length ? `<div class="item-sub">${sub.map(x => `<span>${x}</span>`).join('')}</div>` : ''}
+    </div><div class="item-val${o.isIn ? ' good' : ''}">${partial ? `<small>falta</small>${fmt(o.cents - o.paidPart)}` : `${o.isIn ? '+ ' : ''}${fmt(o.cents)}`}${o.est ? '<span class="est" aria-label="estimado">*</span>' : ''}</div></div>`;
 }
 /* Lista separada por categoria: cabeçalho com o total de cada uma */
 function groupHTML(items, k) {
@@ -849,16 +924,25 @@ const backBtn = (label, to) => `<button class="back" data-act="back" data-to="${
 
 /* Gráfico: o que entrou e o que saiu nos últimos 6 meses */
 function barPath(x, y, w, h, r) { if (h <= .5) return ''; r = Math.min(r, w / 2, h); return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`; }
-function lastMonths(n) { const now = todayKey(); return Array.from({ length: n }, (_, i) => { const k = addMonths(now, i - n + 1); return { k, ...monthTotals(k) }; }); }
+/* Meses do Início: os que já passaram (só os que têm dados), este mês e a previsão dos próximos */
+function homeMonths(now) {
+  const cur = todayKey(), first = Object.keys(S.months).sort()[0] || cur, ahead = Math.max(1, (+pref('fcMonths') || 3) - 1);
+  const ks = [];
+  if (pref('homeHistory')) for (let i = 2; i >= 1; i--) { const k = addMonths(cur, -i); if (k >= first) ks.push(k); }
+  ks.push(cur);
+  if (pref('homeForecast')) for (let i = 1; i <= ahead; i++) ks.push(addMonths(cur, i));
+  if (now !== cur && !ks.includes(now)) ks.push(now);
+  return ks.map(k => ({ k, fut: k > cur, ...(k > cur ? forecastTotals(k) : monthTotals(k)) }));
+}
 function chartSVG(data) {
-  const W = 340, H = 150, T = 8, B = 24, ph = H - T - B, slot = W / data.length, bw = 15, gap = 3;
+  const W = 340, H = 150, T = 8, B = 24, ph = H - T - B, slot = W / data.length, bw = Math.min(15, slot / 2 - 6), gap = 3;
   const max = Math.max(1, ...data.map(d => Math.max(d.inc, d.out))), y = v => T + ph - v / max * ph;
-  let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Barras do que entrou e do que saiu nos últimos ${data.length} meses"><line class="base" x1="0" x2="${W}" y1="${T + ph}" y2="${T + ph}"/>`;
+  let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Barras do que entra e do que sai em cada mês"><line class="base" x1="0" x2="${W}" y1="${T + ph}" y2="${T + ph}"/>`;
   data.forEach((d, i) => {
-    const cx = slot * i + slot / 2, sel = d.k === ui.sel, dim = sel ? '' : 'dim';
+    const cx = slot * i + slot / 2, sel = d.k === ui.sel, dim = (sel ? '' : 'dim') + (d.fut ? ' fut' : '');
     s += `<path class="in ${dim}" d="${barPath(cx - bw - gap / 2, y(d.inc), bw, T + ph - y(d.inc), 4)}"/><path class="out ${dim}" d="${barPath(cx + gap / 2, y(d.out), bw, T + ph - y(d.out), 4)}"/>`;
     s += `<text class="lbl ${sel ? 'sel' : ''}" x="${cx}" y="${H - 6}">${MES_CURTO[parseKey(d.k).m - 1]}</text>`;
-    s += `<rect class="hit" data-act="pick" data-k="${d.k}" x="${slot * i}" y="0" width="${slot}" height="${H}"><title>${monthName(d.k)}: entrou ${fmt(d.inc)}, saiu ${fmt(d.out)}</title></rect>`;
+    s += `<rect class="hit" data-act="pick" data-k="${d.k}" x="${slot * i}" y="0" width="${slot}" height="${H}"><title>${monthName(d.k)}: entra ${fmt(d.inc)}, sai ${fmt(d.out)}</title></rect>`;
   });
   return s + '</svg>';
 }
@@ -873,12 +957,9 @@ function homeKey() {
 }
 function viewHome() {
   const cur = todayKey(), now = homeKey(); if (now !== cur) ensureMonth(now);
-  const t = monthTotals(now), data = lastMonths(6), curPaid = now !== cur || (() => { const tc = monthTotals(cur); return tc.out && !tc.toPay; })();
-  if (!data.some(d => d.k === ui.sel)) ui.sel = now;
-  const sel = data.find(d => d.k === ui.sel);
-  const toPay = outItems(now).filter(o => !o.done && !o.fixed);
+  const t = monthTotals(now), curPaid = now !== cur || (() => { const tc = monthTotals(cur); return tc.out && !tc.toPay; })();
+  const toPay = payItems(now).filter(o => !o.done && !o.fixed);
   const saved = (S.provisions || []).reduce((a, p) => a + provBalance(p), 0);
-  const iowe = sum(personItems('pay', now).filter(o => !o.done)), owe = sum(personItems('recv', now).filter(o => !o.done));
   const ioweAll = (S.payables || []).reduce((a, r) => a + personLeft(r), 0), oweAll = S.receivables.reduce((a, r) => a + personLeft(r), 0);
   const star = f => f ? '<span class="est">*</span>' : '';
   let h = `<div class="top"><h1 class="title">${monthName(now)}</h1><button class="link" data-act="more" style="gap:6px">${ICON.more.replace('<svg', '<svg width="20" height="20"')}Mais</button></div>`;
@@ -887,40 +968,39 @@ function viewHome() {
       <div class="btn-row" style="margin-top:24px"><button class="btn primary" style="margin:0" data-act="fab">Anotar o primeiro gasto</button></div>
       <div class="btn-row"><button class="btn soft" data-act="seed">Ver um exemplo</button></div>`;
   }
-  if (now !== cur) h += `<p class="callbox">${ICON.tick.replace('<svg', '<svg width="16" height="16" style="vertical-align:-2px" stroke="var(--pen)" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')} ${monthName(cur)} está todo pago. Agora você vê ${monthName(now).toLowerCase()}. <button class="link" data-act="showCur" data-v="1">Mostrar ${monthName(cur).toLowerCase()}</button></p>`;
+  if (now !== cur) h += `<p class="note">${monthName(cur)} está todo pago. <button class="link" data-act="showCur" data-v="1">Ver ${monthName(cur).toLowerCase()}</button></p>`;
   else if (curPaid) h += `<p class="note"><button class="link" data-act="showCur" data-v="0">Ver ${monthName(addMonths(cur, 1)).toLowerCase()}</button></p>`;
   if (S.hasExample) h += `<p class="note">Você está vendo um exemplo. <button class="link" data-act="clearEx">Tirar o exemplo</button></p>`;
+  /* 1. O número principal: quanto falta pagar */
   h += `<section class="hero"><p class="hero-label">Falta pagar</p>
     ${t.out && !t.toPay ? `<p class="hero-done">${ICON.tick.replace('<svg', '<svg stroke="currentColor" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')}Tudo pago</p>`
       : `<span class="hero-value">${fmt(t.toPay)}${star(t.estPay)}</span>`}
-    ${progress(pctOf(t.paid, t.out))}<p class="progress-text">Você já pagou ${fmt(t.paid)} de ${fmt(t.out)}.</p></section>
-  <div class="kvs"><div class="kv"><span>Falta receber</span><b>${fmt(t.toGet)}${star(t.estGet)}</b></div>
-    <div class="kv"><span>Vai sobrar</span><b class="${t.left < 0 ? 'bad' : ''}">${fmt(t.left)}${star(t.estAny)}</b></div>
-    ${(S.provisions || []).length && pref('homeSaved') ? `<button class="kv" style="width:100%" data-act="tab" data-tab="prov"><span>Guardado nas reservas</span><b>${fmt(saved)}</b></button>` : ''}
-    ${ioweAll && pref('homePeople') ? `<button class="kv" style="width:100%" data-act="page" data-page="pay"><span>Pagar a pessoas em ${monthName(now).toLowerCase()}<span class="mi-s">Falta no total ${fmt(ioweAll)}</span></span><b>${fmt(iowe)}</b></button>` : ''}
-    ${oweAll && pref('homePeople') ? `<button class="kv" style="width:100%" data-act="page" data-page="recv"><span>Receber de pessoas em ${monthName(now).toLowerCase()}<span class="mi-s">Falta no total ${fmt(oweAll)}</span></span><b>${fmt(owe)}</b></button>` : ''}</div>
-  ${t.estAny ? '<p class="note"><span class="est">*</span> Tem valor estimado. Quando a conta chegar, marque e confirme o valor certo.</p>' : ''}`;
+    ${progress(pctOf(t.paid, t.out))}<p class="progress-text">Já pagou ${fmt(t.paid)} de ${fmt(t.out)}.</p></section>`;
+  /* 2. Quadradinhos com o resto que importa */
+  const tiles = [`<div class="tile"><span>Falta receber</span><b>${fmt(t.toGet)}${star(t.estGet)}</b></div>`,
+    `<div class="tile"><span>Vai sobrar</span><b class="${t.left < 0 ? 'bad' : ''}">${fmt(t.left)}${star(t.estAny)}</b></div>`];
+  if ((S.provisions || []).length && pref('homeSaved')) tiles.push(`<button class="tile" data-act="tab" data-tab="prov"><span>Nas reservas</span><b>${fmt(saved)}</b></button>`);
+  if (pref('homePeople') && ioweAll) tiles.push(`<button class="tile" data-act="page" data-page="pay"><span>Eu devo</span><b>${fmt(ioweAll)}</b></button>`);
+  if (pref('homePeople') && oweAll) tiles.push(`<button class="tile" data-act="page" data-page="recv"><span>Me devem</span><b>${fmt(oweAll)}</b></button>`);
+  h += `<div class="tiles">${tiles.join('')}</div>`;
+  /* 3. O que falta pagar (os cartões entram como uma fatura só) */
   if (toPay.length && pref('homeToPay')) h += `<section class="block"><div class="block-head"><h2>Para pagar</h2>${toPay.length > 5 ? `<button class="link" data-act="goMonth" data-k="${now}">Ver todas (${toPay.length})</button>` : ''}</div>
       <div class="list">${toPay.slice(0, 5).map(o => itemRow(o, now)).join('')}</div></section>`;
-  /* Previsão dos próximos 6 meses, com o que sobra somado */
-  let acc = 0;
-  const fc = !pref('homeForecast') ? [] : Array.from({ length: +pref('fcMonths') || 6 }, (_, i) => { const k = addMonths(cur, i), f = forecastTotals(k); acc += f.left; return { k, ...f, acc }; });
-  const bad = fc.find(f => f.left < 0), avg = Math.round(fc.reduce((a, f) => a + f.left, 0) / (fc.length || 1));
-  if (fc.length) h += `<section class="block"><div class="block-head"><h2>Próximos meses</h2></div>
-    <p class="callbox">${bad ? `<b class="bad">Atenção:</b> em ${monthName(bad.k).toLowerCase()} deve faltar ${fmt(-bad.left)}. Segure os gastos antes disso.`
-      : `Pela previsão, sobra em média <b>${fmt(avg)}</b> por mês. É o quanto dá para gastar a mais sem apertar.`}</p>
-    <div class="list" style="margin-top:10px">${fc.map(d => `
-      <button class="mrow ${d.k === now ? 'now' : ''}" data-act="goMonth" data-k="${d.k}">
-        <span><span class="m-name">${monthName(d.k)}${parseKey(d.k).y !== parseKey(now).y ? ' ' + parseKey(d.k).y : ''}</span><span class="m-sub"><span>Entra ${fmt(d.inc)}</span><span>Sai ${fmt(d.out)}</span></span></span>
-        <span class="m-val ${d.left < 0 ? 'bad' : ''}"><small>Sobra · somado ${fmt(d.acc)}</small>${fmt(d.left)}${d.estAny ? '<span class="est">*</span>' : ''}</span></button>`).join('')}</div>
-    <p class="note">A previsão usa suas contas e entradas de todo mês (as que mudam entram com o último valor, como estimativa *), parcelas, faturas dos cartões, assinaturas, reservas e o que você deve ou tem a receber. "Somado" é quanto vai ter acumulado até aquele mês.</p></section>`;
-  if (pref('homeHistory')) h += `<section class="block"><div class="block-head"><h2>Últimos meses</h2></div>
-    <p class="readout">${monthName(sel.k)}: entrou <b>${fmt(sel.inc)}</b> e saiu <b>${fmt(sel.out)}</b></p>${chartSVG(data)}
-    <div class="legend"><span><i class="sw" style="background:var(--c-in)"></i>Entrou</span><span><i class="sw" style="background:var(--c-out)"></i>Saiu</span></div>
-    <div class="list" style="margin-top:18px">${[...data].reverse().map(d => `
-      <button class="mrow ${d.k === now ? 'now' : ''}" data-act="goMonth" data-k="${d.k}">
-        <span><span class="m-name">${monthName(d.k)}</span><span class="m-sub"><span>Entrou ${fmt(d.inc)}</span><span>Saiu ${fmt(d.out)}</span></span></span>
-        <span class="m-val ${d.inc - d.out < 0 ? 'bad' : ''}"><small>${d.k === now ? 'Vai sobrar' : 'Sobrou'}</small>${fmt(d.inc - d.out)}</span></button>`).join('')}</div></section>`;
+  /* 4. Meses: uma lista só, do passado para o futuro */
+  if (pref('homeHistory') || pref('homeForecast')) {
+    const data = homeMonths(now); if (!data.some(d => d.k === ui.sel)) ui.sel = now;
+    const sel = data.find(d => d.k === ui.sel), fut = data.filter(d => d.fut), bad = fut.find(d => d.left < 0);
+    const anyEst = data.some(d => d.fut || d.estAny);
+    h += `<section class="block"><div class="block-head"><h2>Meses</h2></div>
+      <p class="readout">${monthName(sel.k)}: ${sel.fut ? 'deve entrar' : 'entrou'} <b>${fmt(sel.inc)}</b> e ${sel.fut ? 'sair' : 'saiu'} <b>${fmt(sel.out)}</b></p>${chartSVG(data)}
+      <div class="legend"><span><i class="sw" style="background:var(--c-in)"></i>Entra</span><span><i class="sw" style="background:var(--c-out)"></i>Sai</span>${fut.length ? '<span class="lg-fut">Claro = previsão</span>' : ''}</div>
+      ${bad ? `<p class="callbox"><b class="bad">Atenção:</b> em ${monthName(bad.k).toLowerCase()} deve faltar ${fmt(-bad.left)}.</p>` : ''}
+      <div class="list" style="margin-top:14px">${data.map(d => `
+        <button class="mrow slim ${d.k === cur ? 'now' : ''}" data-act="goMonth" data-k="${d.k}">
+          <span class="m-name">${monthName(d.k)}${parseKey(d.k).y !== parseKey(cur).y ? ' ' + parseKey(d.k).y : ''}</span>
+          <span class="m-val ${d.left < 0 ? 'bad' : ''}"><small>${d.k < cur ? 'Sobrou' : 'Vai sobrar'}</small>${fmt(d.left)}${d.fut || d.estAny ? '<span class="est">*</span>' : ''}</span>${chev}</button>`).join('')}</div>
+      ${anyEst ? '<p class="note"><span class="est">*</span> previsão ou valor estimado.</p>' : ''}</section>`;
+  }
   return h;
 }
 /* =========================================================
@@ -928,21 +1008,24 @@ function viewHome() {
    ========================================================= */
 function viewMes() {
   const k = ui.view; ensureMonth(k);
-  const t = monthTotals(k), outs = outItems(k), ins = inItems(k), isOut = ui.list !== 'in', cur = isOut ? outs : ins;
+  const t = monthTotals(k), pays = payItems(k), ins = inItems(k), isOut = ui.list !== 'in';
+  /* Saídas: 1) faturas (o que se paga do cartão)  2) contas e gastos, com as compras do cartão no dia em que foram feitas */
+  const fats = pays.filter(o => o.fatura || o.type === 'cpay'), spends = pref('showCardSpends') ? cardSpends(k) : [];
+  const own = [...pays.filter(o => !fats.includes(o)), ...spends].sort((a, b) => (a.done - b.done) || ((a.day || 99) - (b.day || 99)));
+  const outs = pays, cur = isOut ? own : ins, nOut = fats.length + own.length;
   let h = `<div class="top"><span></span><button class="ibtn" data-act="print" aria-label="Imprimir ou salvar em PDF">${ICON.print}</button></div>
     <div class="monthbar"><label class="monthpick"><span>${monthName(k)}</span>${ICON.chevD}<input type="month" value="${k}" aria-label="Escolher outro mês"></label>
       <div class="arrows"><button data-act="prev" aria-label="Mês anterior">${ICON.chevL}</button><button data-act="next" aria-label="Próximo mês">${ICON.chevR}</button></div></div>
     <p class="lead" style="margin-top:2px">${parseKey(k).y}${k !== todayKey() ? ` <button class="link" data-act="today" style="margin-left:10px">Voltar para este mês</button>` : ''}</p>`;
   h += `<div class="trio"><div><span>Entrou</span><b>${fmt(t.inc)}${ins.some(x => x.est) ? '<span class="est">*</span>' : ''}</b></div><div><span>Saiu</span><b>${fmt(t.out)}${outs.some(o => o.est) ? '<span class="est">*</span>' : ''}</b></div><div><span>Sobra</span><b class="${t.left < 0 ? 'bad' : ''}">${fmt(t.left)}</b></div></div>
     ${progress(pctOf(t.paid, t.out))}<p class="progress-text">${t.out && !t.toPay ? 'Tudo pago neste mês.' : `Falta pagar ${fmt(t.toPay)}.`}${t.toGet ? ` Falta receber ${fmt(t.toGet)}.` : ''}</p>`;
-  h += `<div class="seg" role="group" aria-label="O que mostrar"><button data-act="list" data-v="out" aria-pressed="${isOut}">Saídas (${outs.length})</button><button data-act="list" data-v="in" aria-pressed="${!isOut}">Entradas (${ins.length})</button></div>`;
-  const fats = S.cards.map(c => ({ c, u: cardUsage(c, k) })).filter(x => x.u.gross || x.u.adv);
-  if (isOut && fats.length && pref('showFats')) h += `<section class="grp"><div class="grp-h">${glyphHTML('', 'financeiro', { glyph: 'card' })}<span class="grp-n">Faturas dos cartões</span><b>${fmt(fats.reduce((a, x) => a + x.u.fatura, 0))}</b></div>
-    <div class="list">${fats.map(({ c, u }) => `<button class="mrow" data-act="open" data-tab="cards" data-page="card:${c.id}"><span class="ccmini" style="--cc:${esc(c.color)}"></span>
-      <span style="flex:1;min-width:0"><span class="m-name">${esc(c.name)}</span><span class="m-sub"><span>${u.paid ? 'Paga' : 'A pagar'}${c.dueDay ? ` · vence dia ${c.dueDay}` : ''}</span>${u.adv ? `<span>Antecipado ${fmt(u.adv)}</span>` : ''}</span></span><span class="m-val">${u.adv ? `<small>de ${fmt(u.gross)}</small>` : ''}${fmt(u.fatura)}</span>${chev}</button>`).join('')}</div>
-    <p class="note">A fatura é a soma de tudo que está no cartão neste mês. Se um gasto do cartão aumentar ou diminuir, a fatura muda junto. Esses gastos aparecem também nas categorias abaixo (não são somados duas vezes).</p></section>`;
-  h += cur.length ? `${pref('groupCats') ? groupHTML(cur, k) : `<div class="list" style="margin-top:18px">${cur.map(o => itemRow(o, k)).join('')}</div>`}<div class="total"><span>Total de ${isOut ? 'saídas' : 'entradas'}</span><b>${fmt(sum(cur))}</b></div>`
-    : `<div class="list" style="margin-top:18px"><p class="empty">${isOut ? 'Nada anotado neste mês. <button data-act="fab">Anotar um gasto</button>' : 'Nenhuma entrada neste mês. <button data-act="fab">Anotar uma entrada</button>'}</p></div>`;
+  h += `<div class="seg" role="group" aria-label="O que mostrar"><button data-act="list" data-v="out" aria-pressed="${isOut}">Saídas (${nOut})</button><button data-act="list" data-v="in" aria-pressed="${!isOut}">Entradas (${ins.length})</button></div>`;
+  if (isOut && fats.length) h += `<section class="grp"><div class="grp-h">${glyphHTML('', 'financeiro', { glyph: 'card' })}<span class="grp-n">Faturas dos cartões</span><b>${fmt(sum(fats))}</b></div>
+    <div class="list">${fats.map(o => itemRow(o, k, true)).join('')}</div></section>`;
+  const listHTML = cur.length ? (pref('groupCats') ? groupHTML(cur, k) : `<div class="list" style="margin-top:18px">${cur.map(o => itemRow(o, k)).join('')}</div>`) : '';
+  if (cur.length || (isOut && fats.length)) h += listHTML + `<div class="total"><span>${isOut ? `Sai da conta em ${monthName(k).toLowerCase()}` : 'Total de entradas'}</span><b>${fmt(isOut ? t.out : t.inc)}</b></div>`;
+  else h += `<div class="list" style="margin-top:18px"><p class="empty">${isOut ? 'Nada anotado neste mês. <button data-act="fab">Anotar um gasto</button>' : 'Nenhuma entrada neste mês. <button data-act="fab">Anotar uma entrada</button>'}</p></div>`;
+  if (isOut && spends.length) h += `<p class="note note-card"><span class="cardmark sm">${ICON.card}</span><span>Gastos no cartão aparecem no dia da compra. Eles não têm bolinha porque já estão somados na fatura, e você paga a fatura.</span></p>`;
   h += `<p class="note">Toque na bolinha para marcar. Toque no nome para mudar. Arraste para a esquerda para apagar.${outs.some(o => o.est) || ins.some(x => x.est) ? ' <span class="est">*</span> é valor estimado: ao marcar, o app pergunta o valor certo.' : ''}</p>
     <button class="link" data-act="open" data-tab="more" data-page="cats">Editar categorias</button>`;
   return h;
@@ -985,7 +1068,7 @@ function pagePrefs() {
       <button data-act="theme" data-v="claro" aria-pressed="${th === 'claro'}">Claro</button><button data-act="theme" data-v="escuro" aria-pressed="${th === 'escuro'}">Escuro</button><button data-act="theme" data-v="auto" aria-pressed="${th === 'auto'}">Igual ao iPhone</button></div></section>
   <section class="block"><div class="block-head"><h2>Aba Mês</h2></div>
     ${sw('groupCats', 'Separar por categoria', 'Desligado: uma lista só, por dia')}
-    ${sw('showFats', 'Mostrar as faturas dos cartões')}
+    ${sw('showCardSpends', 'Mostrar as compras do cartão', 'No dia da compra, com a fatura em que vão cair')}
     <button class="link" data-act="page" data-page="cats" style="margin-top:6px">Editar categorias</button></section>
   <section class="block"><div class="block-head"><h2>Início</h2></div>
     ${sw('homeToPay', 'Lista "Para pagar"')}
@@ -1449,6 +1532,26 @@ function openRealValue(type, id) {
     } });
 }
 
+/* Fatura com valor estimado: quando a fatura fecha, você digita o valor que veio.
+   A diferença vai para "Outras compras do cartão", e a fatura fica certa. */
+function openRealFatura(id, k) {
+  const c = cardById(id), u = cardUsage(c, k), items = cardItems(id, k);
+  const body = `<p class="lead" style="margin-top:8px">A fatura do ${esc(c.name)} de ${monthName(k).toLowerCase()} estava com valor estimado (*). Digite o valor que veio na fatura.</p>
+    ${moneyInput('f-amount', u.fatura, 'BRL', 'Valor da fatura')}${swRow('f-paid', 'Já paguei', true)}`;
+  openSheet({ title: 'Valor da fatura', body,
+    canSave: () => true,
+    onMount(sh) { focusAmount(sh); },
+    onSave(sh) {
+      const diff = getC(sh) - u.fatura, est = items.filter(o => o.type === 'bill' && o.est && !o.credit);
+      const base = est.find(o => o.it.cardBase) || est[0];
+      if (base) base.it.cents = Math.max(0, base.it.cents + diff);
+      est.forEach(o => { o.it.estimate = false; });
+      if ($('#f-paid', sh).checked) setFaturaPaid(id, k, true);
+      const t = monthTotals(ui.view);
+      commit(); toast(t.out && !t.toPay ? 'Tudo pago neste mês!' : 'Valor da fatura salvo');
+    } });
+}
+
 /* =========================================================
    SUAS CONTAS DE OUTUBRO DE 2026 (trazidas da sua nota)
    ========================================================= */
@@ -1550,7 +1653,7 @@ function loadNovData() {
    DESENHAR A TELA
    ========================================================= */
 /* Ajustes: o que aparece no app (tudo pode ser ligado ou desligado) */
-const PREF_DEF = { groupCats: true, showFats: true, homeToPay: true, homeForecast: true, fcMonths: 6, homeHistory: true, homeSaved: true, homePeople: true,
+const PREF_DEF = { groupCats: true, showCardSpends: true, homeToPay: true, homeForecast: true, fcMonths: 3, homeHistory: true, homeSaved: true, homePeople: true,
   tab_cards: true, tab_projects: true, tab_prov: true };
 const pref = k => (S.prefs && S.prefs[k] !== undefined) ? S.prefs[k] : PREF_DEF[k];
 const TABS = [{ id: 'home', label: 'Início' }, { id: 'mes', label: 'Mês' }, { id: 'cards', label: 'Cartões' }, { id: 'projects', label: 'Projetos' }, { id: 'prov', label: 'Reservas' }];
@@ -2017,7 +2120,7 @@ function openDebt(it) {
    ========================================================= */
 function buildReport(k) {
   ensureMonth(k);
-  const t = monthTotals(k), outs = outItems(k), ins = inItems(k);
+  const t = monthTotals(k), outs = payItems(k), ins = inItems(k), spends = cardSpends(k);
   const row = (cells, cls = '') => `<tr class="${cls}">${cells.map(c => `<td class="${c.v ? 'v' : ''}">${c.t}</td>`).join('')}</tr>`;
   return `<h1>Contas de ${monthName(k).toLowerCase()} de ${parseKey(k).y}</h1><p class="r-date">Feito em ${fmtDay.format(new Date())}</p>
     <div class="r-sum"><div><span>Entrou</span><b>${fmt(t.inc)}</b></div><div><span>Saiu</span><b>${fmt(t.out)}</b></div><div><span>Sobra</span><b>${fmt(t.left)}</b></div>
@@ -2028,6 +2131,10 @@ function buildReport(k) {
     <h2>Saídas</h2><table><thead><tr><th>Nome</th><th>Tipo</th><th>Categoria</th><th>Situação</th><th class="v">Valor</th></tr></thead><tbody>
       ${outs.length ? outs.map(o => row([{ t: esc(o.name) }, { t: esc(o.tag || 'Só este mês') }, { t: catById(o.cat).label }, { t: o.done ? 'Pago' : 'Falta pagar' }, { t: fmt(o.cents) + (o.est ? '*' : ''), v: 1 }])).join('') : row([{ t: 'Nenhuma saída' }, { t: '' }, { t: '' }, { t: '' }, { t: '' }])}
       ${row([{ t: 'Total' }, { t: '' }, { t: '' }, { t: '' }, { t: fmt(t.out), v: 1 }], 't')}</tbody></table>
+    ${spends.length ? `<h2>Compras no cartão em ${monthName(k).toLowerCase()}</h2><table><thead><tr><th>Nome</th><th>Dia</th><th>Cartão</th><th>Fatura</th><th class="v">Valor</th></tr></thead><tbody>
+      ${spends.map(o => row([{ t: esc(o.name) }, { t: o.day || '' }, { t: esc(cardById(o.card).name) }, { t: monthName(o.fat) }, { t: fmt(o.cents), v: 1 }])).join('')}
+      ${row([{ t: 'Total' }, { t: '' }, { t: '' }, { t: '' }, { t: fmt(sum(spends)), v: 1 }], 't')}</tbody></table>
+    <p class="r-foot">As compras no cartão já estão somadas nas faturas (não entram duas vezes nas saídas).</p>` : ''}
     <p class="r-foot">* valor estimado. Minhas Contas.</p>`;
 }
 function printMonth(k) { $('#print').innerHTML = buildReport(k); setTimeout(() => window.print(), 50); }
@@ -2121,6 +2228,7 @@ function fabAction() {
 }
 function editAny(type, id) {
   const it = findItem(type, id); if (!it) return;
+  if (type === 'fatura') { if (ui.tab === 'home') ui.view = homeKey(); return go('cards', 'card:' + id); }
   if (type === 'recv' || type === 'pay') return openPerson(type, { item: it });
   if (type === 'move') { const pv = provOfMove(id); return pv && openMove(pv, null, it); }
   if (type === 'fx') return openFx(projOfFx(id), it);
@@ -2159,11 +2267,7 @@ document.addEventListener('click', e => {
     case 'editMove': { const pv = provById(r.dataset.prov); const mv = pv && (pv.moves || []).find(x => x.id === id); if (mv) openMove(pv, null, mv); break; }
     case 'loadMine': loadMyData(); loadNovData(); migrate(); ensureMonth(todayKey()); go('home'); save(); toast('Suas contas de outubro foram trazidas'); break;
     case 'payFatura': {
-      const k2 = ui.view, on = el.dataset.v === '1'; let n = 0;
-      cardItems(el.dataset.id, k2).forEach(o => {
-        if (o.type === 'bill') { if (o.it.paid !== on) n++; o.it.paid = on; }
-        else if (o.type === 'inst' || o.type === 'sub') { o.it.paid = o.it.paid || {}; if (!!o.it.paid[k2] !== on) n++; if (on) o.it.paid[k2] = true; else delete o.it.paid[k2]; }
-      });
+      const on = el.dataset.v === '1', n = setFaturaPaid(el.dataset.id, ui.view, on);
       commit(); toast(on ? `Fatura paga: ${n} ${n === 1 ? 'item marcado' : 'itens marcados'}` : 'Fatura desmarcada');
       break;
     }
@@ -2210,6 +2314,7 @@ document.addEventListener('click', e => {
     case 'toggle': {
       if (ui.tab === 'home') ui.view = homeKey();
       { const it0 = findItem(type, id); if (it0 && it0.estimate && (type === 'bill' || type === 'income') && !(type === 'bill' ? it0.paid : it0.received)) { openRealValue(type, id); break; } }
+      if (type === 'fatura') { const fr = faturaRows(ui.view).find(x => x.it.id === id); if (fr && fr.est && !fr.done) { openRealFatura(id, ui.view); break; } }
       const before = monthTotals(ui.view);
       el.classList.toggle('on'); el.setAttribute('aria-pressed', String(el.classList.contains('on')));
       r.classList.toggle('done'); r.classList.add('just');
