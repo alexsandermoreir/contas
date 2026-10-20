@@ -37,6 +37,9 @@ jobs:
       - name: Instalar o que os testes usam
         run: npm install --no-audit --no-fund
 
+      - name: Instalar o navegador dos testes (Chromium)
+        run: npx playwright install --with-deps chromium
+
       - name: Testar o app
         run: npm test
         env:
