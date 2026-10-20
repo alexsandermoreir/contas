@@ -501,7 +501,9 @@ const rateOf = (p, c) => c === 'BRL' ? 1 : ((p.rates && p.rates[c]) || (c === p.
 function fxRate(p, c) { const L = (p.fx || []).filter(f => f.cur === c), amt = L.reduce((a, f) => a + f.amt, 0); return amt ? (L.reduce((a, f) => a + f.brl, 0) / 100) / (amt / Math.pow(10, decOf(c))) : 0; }
 function itemBRL(p, x) { const c = x.cur || p.currency; return c === 'BRL' ? (x.amt || 0) : Math.round((x.amt || 0) / Math.pow(10, decOf(c)) * (x.rate || rateOf(p, c)) * 100); }
 const toReais = (amt, c, rate) => c === 'BRL' ? (amt || 0) : Math.round((amt || 0) / Math.pow(10, decOf(c)) * (rate || 0) * 100);
-const rateTxt = r => String(Math.round(r * 10000) / 10000).replace('.', ',');
+/* Cotação com no máximo 4 algarismos (ex.: 1 iene = R$ 0,03288) */
+const round4 = r => r > 0 ? Number(Number(r).toPrecision(4)) : 0;
+const rateTxt = r => String(round4(r)).replace('.', ',');
 /* Cotação de hoje pela internet (se não der, você digita) */
 const rateCache = {};
 async function fetchRate(cur) {
@@ -512,7 +514,7 @@ async function fetchRate(cur) {
     async () => (await (await fetch(`https://api.frankfurter.app/latest?from=${cur}&to=BRL`)).json()).rates.BRL,
   ];
   for (const t of tries) {
-    try { const v = await Promise.race([t(), new Promise((_, rej) => setTimeout(() => rej(new Error('demorou')), 6000))]); if (v > 0) return (rateCache[cur] = v); } catch (e) { /* tenta a próxima */ }
+    try { const v = await Promise.race([t(), new Promise((_, rej) => setTimeout(() => rej(new Error('demorou')), 6000))]); if (v > 0) return (rateCache[cur] = round4(v)); } catch (e) { /* tenta a próxima */ }
   }
   return 0;
 }
@@ -1285,7 +1287,7 @@ function fxHTML(p) {
   return head + `<div class="kvs" style="margin-top:0">${curs.map(c => { const bought = fx.filter(f => f.cur === c).reduce((a, f) => a + f.amt, 0),
       spent = (p.items || []).filter(x => (x.cur || p.currency) === c && !x.cardId).reduce((a, x) => a + (x.amt || 0), 0), left = bought - spent;
       return `<div class="kv"><span>Disponível em ${curName(c).toLowerCase()}</span><b class="${left < 0 ? 'bad' : ''}">${fmtCur(left, c)}</b></div>
-        <p class="note" style="margin:-6px 0 8px">Comprou ${fmtCur(bought, c)}, gastou ${fmtCur(spent, c)} em espécie. Cotação média: R$ ${String(Math.round(fxRate(p, c) * 10000) / 10000).replace('.', ',')}.</p>`; }).join('')}</div>
+        <p class="note" style="margin:-6px 0 8px">Comprou ${fmtCur(bought, c)}, gastou ${fmtCur(spent, c)} em espécie. Cotação média: R$ ${rateTxt(fxRate(p, c))}.</p>`; }).join('')}</div>
     <div class="list">${fx.map(f => `<div class="item" data-type="fx" data-id="${f.id}"><span class="tick" style="visibility:hidden"></span><div class="item-text" data-act="edit" role="button" tabindex="0">
       <div class="item-name"><span class="nm">Câmbio ${esc(f.note || '')}</span></div><div class="item-sub"><span>${fmtDate(f.date)}</span><span>Saiu ${fmt(f.brl)}</span></div></div>
       <div class="item-val good">+ ${fmtCur(f.amt, f.cur)}</div></div>`).join('')}</div>
@@ -2114,7 +2116,7 @@ function openProject(p) {
       const paint = () => { $('#f-coverprev', sh).innerHTML = st.cover ? `<div class="cover" style="height:120px"><img src="${st.cover}" alt=""></div>` : '<p class="muted" style="margin-top:6px">Sem foto</p>'; };
       const drawRates = () => {
         sh.querySelectorAll('[id^="f-rate-"]').forEach(i => { st.rates[i.id.slice(7)] = parseDecimal(i.value); });
-        $('#f-rates', sh).innerHTML = used().map(c => field('f-rate-' + c, `Quanto vale 1 ${curName(c).toLowerCase()} (${c}) em reais`, st.rates[c] ? String(st.rates[c]).replace('.', ',') : '', 'Ex.: 0,04', { dec: true, help: helpBtn(HELP.cotacao) })).join('');
+        $('#f-rates', sh).innerHTML = used().map(c => field('f-rate-' + c, `Quanto vale 1 ${curName(c).toLowerCase()} (${c}) em reais`, st.rates[c] ? rateTxt(st.rates[c]) : '', 'Ex.: 0,04', { dec: true, help: helpBtn(HELP.cotacao) })).join('');
       };
       onChips(sh, 'f-cur', v => { drawRates(); st.currency = v; drawRates(); const b = $('#f-budget', sh); b.dataset.cur = v; setC(b, 0); SH.refresh(); });
       $('#f-photo', sh).addEventListener('change', async e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return; try { st.cover = await readImage(f, 1000, false); paint(); } catch (err) { toast('Não deu para abrir essa foto.'); } });
@@ -2122,7 +2124,7 @@ function openProject(p) {
       paint(); drawRates();
     },
     onSave(sh) {
-      sh.querySelectorAll('[id^="f-rate-"]').forEach(i => { st.rates[i.id.slice(7)] = parseDecimal(i.value); });
+      sh.querySelectorAll('[id^="f-rate-"]').forEach(i => { st.rates[i.id.slice(7)] = round4(parseDecimal(i.value)); });
       const data = { name: $('#f-name', sh).value.trim(), currency: st.currency, rates: st.rates, rate: st.currency === 'BRL' ? 1 : st.rates[st.currency], budget: getC(sh, 'f-budget'), cover: st.cover, color: st.color || PROJ_COLORS[0], count: $('#f-count', sh).checked, countDebts: $('#f-cdebts', sh).checked };
       if (p) { (p.items || []).forEach(x => { if (!x.cur) x.cur = p.currency; }); Object.assign(p, data); }   /* cada gasto guarda a própria moeda */
       else S.projects.push({ id: uid(), items: [], ...data });
@@ -2211,7 +2213,7 @@ function openTripItem(p, o = {}) {
       drawRate(); drawWho(); hint(); if (!edit) focusAmount(sh);
     },
     onSave(sh) {
-      const r = rateNow(sh), amt = getC(sh), desc = $('#f-name', sh).value.trim() || 'Gasto', date = $('#f-date', sh).value || todayISO();
+      const r = round4(rateNow(sh)) || 1, amt = getC(sh), desc = $('#f-name', sh).value.trim() || 'Gasto', date = $('#f-date', sh).value || todayISO();
       if (cur !== 'BRL') { p.rates = p.rates || {}; p.rates[cur] = r; }
       p.lastCur = cur;
       /* trocou quem pagou? tira do lugar antigo */
@@ -2655,6 +2657,10 @@ function migrate() {
   if (!S.investSeeded) { seedInvest(); S.investSeeded = true; }
   if (!S.cardsFixed) { billsToCards(); S.cardsFixed = true; }
   if (!S.cardsMerged) { mergeAutoCards(); S.cardsMerged = true; }
+  /* cotações guardadas com no máximo 4 algarismos */
+  S.projects.forEach(p => { if (p.rates) Object.keys(p.rates).forEach(c => { p.rates[c] = round4(p.rates[c]); });
+    if (p.currency !== 'BRL' && p.rate) p.rate = round4(p.rate); (p.items || []).forEach(x => { if (x.rate) x.rate = round4(x.rate); }); });
+  (S.payables || []).forEach(r => { if (r.rate) r.rate = round4(r.rate); });
   if ((S.v || 0) < 4) S.v = 4;
 }
 
@@ -2839,6 +2845,25 @@ new MutationObserver(ms => ms.forEach(m => { if (m.type === 'characterData') low
 lowerNode(document.body);
 
 /* =========================================================
+   ATUALIZAR SOZINHO: o iPhone guarda uma cópia do app.
+   Ao abrir (ou voltar para o app), confere se existe versão nova e recarrega.
+   ========================================================= */
+const APP_VERSION = '2026-10-20.3';
+async function checkUpdate() {
+  if (SH) return;   /* não recarrega no meio de uma anotação */
+  try {
+    const t = await (await fetch(location.pathname + '?check=' + Date.now(), { cache: 'no-store' })).text();
+    const m = /const APP_VERSION = '([^']+)'/.exec(t);
+    if (!m || m[1] === APP_VERSION) return;
+    let tried = ''; try { tried = sessionStorage.getItem('upd') || ''; } catch (e) {}
+    if (tried === m[1]) return;   /* já tentou esta versão: não fica recarregando */
+    try { sessionStorage.setItem('upd', m[1]); } catch (e) {}
+    location.replace(location.pathname + '?v=' + encodeURIComponent(m[1]));
+  } catch (e) { /* sem internet: segue com a cópia que tem */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
+
+/* =========================================================
    INÍCIO
    ========================================================= */
 (function init() {
@@ -2859,6 +2884,7 @@ lowerNode(document.body);
   } catch (e) { /* sem canvas */ }
   render();
   if (cloudConf()) cloudStart();
+  setTimeout(checkUpdate, 800);
 })();
 </script>
 </body>
