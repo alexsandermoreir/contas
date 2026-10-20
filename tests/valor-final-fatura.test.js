@@ -22,13 +22,13 @@ const fat = (ev, k) => JSON.parse(ev(`JSON.stringify(faturaRows('${k}').find(x =
   ok(fat(ev, '2026-10').cents === 12190, 'Antes do valor final: só os automáticos (R$ 121,90)');
   /* tocar no aviso abre o formulário com os automáticos */
   doc.querySelector('.remind[data-id="tc"]').click();
-  ok(/Automáticos/.test(doc.querySelector('.sheet').textContent) && /121,90/.test(doc.querySelector('.sheet').textContent), 'Formulário mostra os automáticos R$ 121,90');
+  { const tx = doc.querySelector('.sheet').textContent; ok(/assinaturas/i.test(tx) && /21,90/.test(tx) && /parcelas/i.test(tx) && /100,00/.test(tx), 'Formulário mostra o que já está no cartão: assinatura R$ 21,90 e parcela R$ 100,00'); }
   ev(`setC($('#f-amount'), 30000)`); doc.querySelector('#f-amount').dispatchEvent(new (doc.defaultView.Event)('input', { bubbles: true }));
   doc.querySelector('[data-sheet="save"]').click();
   const f = fat(ev, '2026-10');
   ok(f.cents === 30000, 'Fatura fica com o valor final R$ 300,00');
   const ex = JSON.parse(ev(`JSON.stringify(cardItems('tc','2026-10').filter(o => o.extra).map(o => [o.name, o.cents]))`));
-  ok(ex.length === 1 && ex[0][0] === 'Extras' && ex[0][1] === 17810, 'Extras = 300,00 − 121,90 = R$ 178,10: ' + JSON.stringify(ex));
+  ok(ex.length === 1 && ex[0][0] === 'Extras e eventuais' && ex[0][1] === 17810, 'Extras = 300,00 − 121,90 = R$ 178,10: ' + JSON.stringify(ex));
   ok(!f.needsFinal, 'Depois de colocar, não pede mais');
   ok(![...doc.querySelectorAll('.remind')].some(x => /Cartão Teste/.test(x.textContent)), 'Aviso some do Início');
   /* extras viram previsão (*) nos próximos meses */
@@ -61,7 +61,7 @@ const fat = (ev, k) => JSON.parse(ev(`JSON.stringify(faturaRows('${k}').find(x =
   ok(ev(`cardUsage(cardById('tc'),'2026-10').paid`) === true, 'E fica paga');
   /* tirar o valor final */
   ev(`openFaturaValue('tc','2026-10')`); doc.querySelector('[data-sheet="delete"]').click();
-  ok(fat(ev, '2026-10').cents === 12190 && fat(ev, '2026-10').needsFinal, 'Tirar o valor final volta aos automáticos');
+  ok(fat(ev, '2026-10').cents === 12190 && fat(ev, '2026-10').done, 'Tirar o valor: volta ao que está anotado (a provisão de R$ 100 é menor) e continua paga');
 }
 /* 3. Fatura que ainda não fechou não pede valor; tela do cartão mostra a linha */
 { const { ev, doc, errs } = app();

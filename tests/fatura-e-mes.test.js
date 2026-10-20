@@ -45,8 +45,7 @@ const rows = (doc) => [...doc.querySelectorAll('.item')].map(r => ({ el: r, name
   const itau = rows(doc).find(x => x.type === 'fatura' && x.name === 'Itaúcard');
   ok(itau && !itau.done, 'Fatura Itaú de outubro em aberto');
   itau.el.querySelector('button.tick').click();
-  ok(!!doc.querySelector('.sheet #f-amount'), 'Fatura fechada: a bolinha pergunta o valor final');
-  doc.querySelector('[data-sheet="save"]').click();
+  ok(!doc.querySelector('.sheet #f-amount'), 'Fatura já fechada (com valor): a bolinha marca direto, sem perguntar');
   ok(ev(`cardUsage(S.cards.find(c=>c.name==='Itaúcard'),'2026-10').paid`) === true, 'Bolinha marca a fatura como paga');
   ok(ev(`monthTotals('2026-10').toPay`) === 0, 'Outubro: tudo pago depois de marcar a fatura');
   ev(`applyToggle('fatura', S.cards.find(c=>c.name==='Itaúcard').id)`);
