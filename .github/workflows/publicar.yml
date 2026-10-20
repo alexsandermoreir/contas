@@ -1,0 +1,57 @@
+# Publicação automática do app
+#
+# Quando o Claude envia uma mudança numa branch "claude/...", este robô:
+#   1. roda todos os testes do app;
+#   2. se TODOS passarem, junta a mudança ao main e o GitHub Pages publica o app.
+# Se algum teste falhar, nada é publicado e o app continua como estava.
+#
+# Para desligar: no GitHub, Actions > "publicar" > "..." > Disable workflow
+# (ou apague este arquivo).
+
+name: publicar
+
+on:
+  push:
+    branches: ['claude/**']
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: publicar
+  cancel-in-progress: false
+
+jobs:
+  testar-e-publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar o que os testes usam
+        run: npm install --no-audit --no-fund
+
+      - name: Testar o app
+        run: npm test
+        env:
+          TZ: America/Sao_Paulo
+
+      - name: Publicar (juntar ao main)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git checkout -B main origin/main
+          git merge --no-ff --no-edit "origin/${GITHUB_REF_NAME}" -m "Publica ${GITHUB_REF_NAME}"
+          git push origin main
+
+      - name: Pedir ao GitHub Pages para atualizar o site
+        if: success()
+        run: gh api -X POST "repos/${GITHUB_REPOSITORY}/pages/builds" || echo "O Pages vai atualizar sozinho."
+        env:
+          GH_TOKEN: ${{ github.token }}
