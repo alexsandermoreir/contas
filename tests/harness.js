@@ -39,7 +39,9 @@ function estado() {
     ['Claro Flex','Blink Fibra','Claude','Google One','Uber + iFood'].forEach(n => { const s = S.subs.find(s=>s.name===n); if (n==='Claro Flex'||n==='Blink Fibra') s.day = 10; s.cardId = nu.id; });
     ['iCloud','Meli+'].forEach(n => { S.subs.find(s=>s.name===n).cardId = bela.id; });
     S.installments[0].cardId = itau.id; S.installments[0].day = 15;
-    month('2026-11').bills.forEach(b => { if (b.cardId === nu.id) b.cents = 50000; if (b.cardId === bela.id) b.cents = 100000; if (b.cardId === itau.id) b.cents = 150000; });
+    /* provisão de cada cartão (o total que costuma vir na fatura) */
+    const au = (c, k) => sum(outItems(k).filter(o => o.card === c.id && !o.extra));
+    nu.prov = au(nu, '2026-11') + 50000; bela.prov = au(bela, '2026-11') + 100000; itau.prov = au(itau, '2026-11') + 150000;
     S.cardPays = [{ id: uid(), cardId: nu.id, fatura: '2026-11', date: '2026-10-16', cents: 158538 }];
     save();
   })()`);
