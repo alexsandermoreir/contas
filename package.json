@@ -2,6 +2,11 @@
   "name": "minhas-contas",
   "private": true,
   "description": "App Minhas Contas (index.html). Os testes rodam sozinhos antes de publicar.",
-  "scripts": { "test": "node tests/run.js" },
-  "devDependencies": { "jsdom": "24.1.3" }
+  "scripts": {
+    "test": "node tests/run.js"
+  },
+  "devDependencies": {
+    "jsdom": "24.1.3",
+    "playwright": "1.47.2"
+  }
 }
