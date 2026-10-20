@@ -195,6 +195,13 @@ html[data-theme="escuro"] .seg button[aria-pressed="true"]{background:#3A3A3C}
 .mrow .m-val{margin-left:auto;text-align:right;font-family:var(--num);font-variant-numeric:tabular-nums;font-size:17px;font-weight:600;white-space:nowrap}
 .mrow .m-val small{display:block;font-size:12px;color:var(--muted);font-weight:400;font-family:-apple-system,sans-serif}
 .mrow.slim{min-height:52px}
+/* Aviso de fatura fechada */
+.reminds{margin-top:22px;display:grid;gap:8px}
+.remind{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 14px;border-radius:14px;background:var(--pen-soft)}
+.remind:active{opacity:.6}
+.remind .r-t{flex:1;min-width:0}
+.remind .r-t b{display:block;font-size:15px;font-weight:600}
+.remind .r-t span{display:block;font-size:13px;color:var(--muted)}
 .chart .fut{fill-opacity:.4}
 .lg-fut{color:var(--faint)}
 /* Início: quadradinhos */
@@ -351,7 +358,13 @@ button.tile:active{opacity:.6}
 .alert .no{background:var(--soft);color:var(--ink);font-weight:500}
 
 /* Relatório para imprimir ou salvar em PDF (só aparece na impressão) */
-#print{display:none}
+/* Estética em minúsculas: todo o texto do app em letras minúsculas.
+   O que você digita nos campos fica como você escreveu, e o PDF sai normal. */
+body{text-transform:lowercase}
+button,input.money{text-transform:lowercase}
+input:not(.money),textarea,select{text-transform:none}
+input::placeholder,textarea::placeholder{text-transform:lowercase}
+#print{display:none;text-transform:none}
 @media print{
   @page{margin:16mm}
   html,body{background:#fff!important;color:#000!important}
@@ -637,6 +650,21 @@ function faturaMonth(c, m, day) {
   if (c.dueDay && c.dueDay <= c.closeDay) f = addMonths(f, 1);
   return f;
 }
+/* Valor final da fatura (o que veio no app do banco). null = ainda não colocou */
+const finalOf = (c, k) => c && c.fechada && c.fechada[k] != null ? c.fechada[k] : null;
+/* A fatura do mês k já fechou? (fecha no dia closeDay do mês dela, ou do mês anterior se vence antes de fechar) */
+function isClosed(c, k) {
+  if (!c || !c.closeDay) return false;
+  const cm = c.dueDay && c.dueDay <= c.closeDay ? addMonths(k, -1) : k, cur = todayKey();
+  return cur > cm || (cur === cm && new Date().getDate() >= c.closeDay);
+}
+const needsFinal = (c, k) => isClosed(c, k) && finalOf(c, k) === null;
+/* Fatura que fechou por último (a que ainda falta colocar o valor final) */
+function lastClosed(c) {
+  if (!c || !c.closeDay) return null;
+  const cur = todayKey(), d = new Date().getDate();
+  return d >= c.closeDay ? faturaMonth(c, cur, c.closeDay) : faturaMonth(c, addMonths(cur, -1), c.closeDay);
+}
 const chargedLabel = (m, day) => `Cobrado em ${day}/${MES_CURTO[parseKey(m).m - 1]}`;
 const OFFSETS = [0, -1, -2];   /* um gasto pode cair até 2 faturas depois */
 function projMonthItems(k, onlyCounted = true) {
@@ -657,9 +685,10 @@ function outItems(k) {
     (mo.bills || []).forEach(b => {
       const c = b.cardId && cardById(b.cardId), f = c ? faturaMonth(c, m, b.day) : m;
       if (f !== k) return;
+      if (b.cardBase && finalOf(c, k) !== null) return;   /* já tem o valor final: os extras são calculados */
       if (b.kind === 'estorno') { L.push({ type: 'bill', it: b, name: b.name, cents: -b.cents, credit: true, fixed: true, done: false, day: f === m ? b.day : null, cat: validCat('financeiro', 'out', 'outros'), card: b.cardId, shifted: f !== m ? chargedLabel(m, b.day) : '', tag: 'Estorno' }); return; }
-      L.push({ type: 'bill', it: b, name: b.name, cents: b.cents, done: !!b.paid, day: f === m ? b.day : null, cat: itemCat(b), card: b.cardId, est: !!b.estimate,
-        shifted: f !== m ? chargedLabel(m, b.day) : '', tag: b.cardBase ? 'Outras compras do cartão' : b.kind !== 'compra' && b.recurring ? 'Todo mês' : '' });
+      L.push({ type: 'bill', it: b, name: b.cardBase ? 'Extras' : b.name, cents: b.cents, done: !!b.paid, day: f === m ? b.day : null, cat: itemCat(b), card: b.cardId, est: !!b.estimate, extra: !!b.cardBase,
+        shifted: f !== m ? chargedLabel(m, b.day) : '', tag: b.cardBase ? 'Previsto: corridas, iFood e outros gastos soltos' : b.kind !== 'compra' && b.recurring ? 'Todo mês' : '' });
     });
   });
   S.installments.forEach(i => {
@@ -692,6 +721,13 @@ function outItems(k) {
   /* Câmbio: o real sai da conta e vira dinheiro da viagem */
   S.projects.forEach(p => (p.fx || []).forEach(f => { if (f.date && f.date.slice(0, 7) === k) L.push({ type: 'fx', it: f, name: `Câmbio: ${fmtCur(f.amt, f.cur)}`, cents: f.brl, done: true, fixed: true, day: +f.date.slice(8, 10), cat: validCat('viagem', 'out', 'outros'), tag: p.name }); }));
   projMonthItems(k).forEach(o => L.push({ type: 'pitem', it: o.x, name: o.x.desc || 'Gasto', cents: o.cents, done: true, fixed: true, cat: itemCat(o.x, 'viagem'), card: o.x.cardId, shifted: o.shifted, tag: o.p.name }));
+  /* Valor final da fatura: o que passar dos automáticos vira "Extras" */
+  S.cards.forEach(c => {
+    const v = finalOf(c, k); if (v === null) return;
+    const ex = v - sum(L.filter(o => o.card === c.id)), neg = ex < 0;
+    L.push({ type: 'extra', it: { id: c.id + '|' + k }, name: neg ? 'Ajuste' : 'Extras', cents: ex, credit: neg, fixed: true, extra: true, done: !!(c.extraPaid && c.extraPaid[k]),
+      cat: validCat('financeiro', 'out', 'outros'), card: c.id, tag: neg ? 'A fatura veio menor que os automáticos' : `Fatura fechada em ${fmt(v)}` });
+  });
   /* estornos e antecipações contam como pagos quando a fatura do cartão está paga */
   /* a antecipação não desconta mais do que a fatura tem */
   const grossOf = id => sum(L.filter(o => o.card === id));
@@ -722,7 +758,8 @@ function faturaRows(k, L) {
     /* o que você já marcou como pago dentro da fatura continua descontado */
     const part = u.paid ? u.fatura : Math.min(u.fatura, sum(items.filter(o => o.done && !o.credit)));
     return { type: 'fatura', it: c, name: `Fatura ${c.name}`, cents: u.fatura, paidPart: part, done: u.paid, day: c.dueDay || null, cat: validCat('financeiro', 'out', 'outros'),
-      fatura: true, est: !u.paid && items.some(o => o.est), tag: u.adv ? `Antecipado ${fmt(u.adv)}` : '' };
+      fatura: true, est: !u.paid && items.some(o => o.est), needsFinal: !u.paid && needsFinal(c, k),
+      tag: [u.adv ? `Antecipado ${fmt(u.adv)}` : '', !u.paid && needsFinal(c, k) ? '<span class="soon">Falta o valor final</span>' : ''].filter(Boolean).join(' · ') };
   }).filter(Boolean);
 }
 function payItems(k) {
@@ -732,7 +769,8 @@ function payItems(k) {
 }
 /* Marca (ou desmarca) como pago tudo o que está na fatura do cartão no mês k */
 function setFaturaPaid(id, k, on) {
-  let n = 0;
+  let n = 0; const c = cardById(id);
+  if (c && finalOf(c, k) !== null) { c.extraPaid = c.extraPaid || {}; if (on) c.extraPaid[k] = true; else delete c.extraPaid[k]; }
   cardItems(id, k).forEach(o => {
     if (o.type === 'bill') { if (!!o.it.paid !== on) n++; o.it.paid = on; }
     else if (o.type === 'inst' || o.type === 'sub') { o.it.paid = o.it.paid || {}; if (!!o.it.paid[k] !== on) n++; if (on) o.it.paid[k] = true; else delete o.it.paid[k]; }
@@ -818,6 +856,7 @@ function findItem(type, id) {
     case 'pitem': return S.projects.flatMap(p => p.items || []).find(x => x.id === id);
     case 'prov': return (S.provisions || []).find(x => x.id === id);
     case 'fatura': return cardById(id);
+    case 'extra': return cardById(id.split('|')[0]);
   }
 }
 const projOfItem = id => S.projects.find(p => (p.items || []).some(x => x.id === id));
@@ -896,7 +935,7 @@ function itemRow(o, k, inGroup) {
   const cat = catById(o.cat), cc = o.card && cardById(o.card);
   let sub;
   if (o.spend) sub = [o.day ? `Dia ${o.day}` : '', o.fat ? `Na fatura de ${monthName(o.fat).toLowerCase()}` : '', cc ? esc(cc.name) : '', o.tag ? esc(o.tag) : '', !inGroup ? esc(cat.label) : ''];
-  else if (o.fatura) sub = [o.done ? 'Paga' : (dueText(o.day, k, false) || '').replace(/^Dia /, 'Vence dia '), o.tag ? esc(o.tag) : '', !o.done && o.paidPart ? `Já pagou ${fmt(o.paidPart)}` : ''];
+  else if (o.fatura) sub = [o.done ? 'Paga' : (dueText(o.day, k, false) || '').replace(/^Dia /, 'Vence dia '), o.tag || '', !o.done && o.paidPart ? `Já pagou ${fmt(o.paidPart)}` : ''];
   else sub = [o.isIn ? (o.day ? `Dia ${o.day}` : '') : dueText(o.day, k, o.done), o.shifted || '', o.tag ? esc(o.tag) : '', !inGroup && o.type !== 'prov' ? esc(cat.label) : '', cc ? esc(cc.name) : ''];
   sub = sub.filter(Boolean);
   const partial = o.fatura && !o.done && o.paidPart > 0;
@@ -983,6 +1022,11 @@ function viewHome() {
   if (pref('homePeople') && ioweAll) tiles.push(`<button class="tile" data-act="page" data-page="pay"><span>Eu devo</span><b>${fmt(ioweAll)}</b></button>`);
   if (pref('homePeople') && oweAll) tiles.push(`<button class="tile" data-act="page" data-page="recv"><span>Me devem</span><b>${fmt(oweAll)}</b></button>`);
   h += `<div class="tiles">${tiles.join('')}</div>`;
+  /* Aviso: a fatura fechou e falta colocar o valor final */
+  const lemb = S.cards.map(c => ({ c, k: lastClosed(c) })).filter(x => x.k && finalOf(x.c, x.k) === null && !cardUsage(x.c, x.k).paid);
+  if (lemb.length) h += `<div class="reminds">${lemb.map(({ c, k }) => `<button class="remind" data-act="fechar" data-id="${c.id}" data-k="${k}">
+      <span class="ico" style="--ic:${esc(c.color || '#8E8E93')}">${ICON.card}</span>
+      <span class="r-t"><b>A fatura do ${esc(c.name)} ${new Date().getDate() === c.closeDay ? 'fecha hoje' : 'fechou'}</b><span>Coloque o valor que veio no app do banco</span></span>${chev}</button>`).join('')}</div>`;
   /* 3. O que falta pagar (os cartões entram como uma fatura só) */
   if (toPay.length && pref('homeToPay')) h += `<section class="block"><div class="block-head"><h2>Para pagar</h2>${toPay.length > 5 ? `<button class="link" data-act="goMonth" data-k="${now}">Ver todas (${toPay.length})</button>` : ''}</div>
       <div class="list">${toPay.slice(0, 5).map(o => itemRow(o, now)).join('')}</div></section>`;
@@ -1143,6 +1187,8 @@ function pageCard(id) {
     <div class="kvs">${u.adv ? `<div class="kv"><span>Total da fatura</span><b>${fmt(u.gross)}</b></div><div class="kv"><span>Já antecipado</span><b class="good">− ${fmt(u.adv)}</b></div>` : ''}
       <div class="kv"><span>${u.adv ? 'Falta pagar' : `Fatura de ${monthName(k).toLowerCase()}`}</span><b>${fmt(u.fatura)}</b></div>
       <div class="kv"><span>Fecha ${helpBtn(HELP.fechamento)}</span><b style="font-size:17px">${c.closeDay ? 'dia ' + c.closeDay : '<button class="link" data-act="editCard" data-id="' + c.id + '">Colocar</button>'}${c.dueDay ? `, vence dia ${c.dueDay}` : ''}</b></div>
+      ${c.closeDay ? (() => { const fv = finalOf(c, k), autos = sum(items.filter(o => !o.extra));
+        return `<button class="kv" style="width:100%" data-act="fechar" data-id="${c.id}" data-k="${k}"><span>Valor final da fatura<span class="mi-s">${fv !== null ? `Automáticos ${fmt(autos)} + extras ${fmt(fv - autos)}` : isClosed(c, k) ? '<span class="soon">A fatura já fechou. Toque para colocar.</span>' : `Coloque quando fechar, no dia ${c.closeDay}`}</span></span><b style="font-size:17px">${fv !== null ? fmt(fv) : '<span class="link" style="min-height:0">Colocar</span>'}</b></button>`; })() : ''}
       ${u.future ? `<div class="kv"><span>Parcelas que ainda vão vir</span><b>${fmt(u.future)}</b></div>` : ''}</div>
     ${items.length ? (u.paid
       ? `<p class="hero-done" style="font-size:22px;margin-top:18px">${ICON.tick.replace('<svg', '<svg stroke="currentColor" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"')}Fatura paga</p><button class="link" data-act="payFatura" data-id="${c.id}" data-v="0">Desmarcar a fatura</button>`
@@ -1532,24 +1578,47 @@ function openRealValue(type, id) {
     } });
 }
 
-/* Fatura com valor estimado: quando a fatura fecha, você digita o valor que veio.
-   A diferença vai para "Outras compras do cartão", e a fatura fica certa. */
-function openRealFatura(id, k) {
-  const c = cardById(id), u = cardUsage(c, k), items = cardItems(id, k);
-  const body = `<p class="lead" style="margin-top:8px">A fatura do ${esc(c.name)} de ${monthName(k).toLowerCase()} estava com valor estimado (*). Digite o valor que veio na fatura.</p>
-    ${moneyInput('f-amount', u.fatura, 'BRL', 'Valor da fatura')}${swRow('f-paid', 'Já paguei', true)}`;
+/* =========================================================
+   VALOR FINAL DA FATURA
+   No dia em que a fatura fecha, você coloca o valor que veio no app do banco.
+   O app já sabe os automáticos (assinaturas, parcelas e compras anotadas no cartão);
+   o que passar disso vira "Extras" (corridas, iFood e outros gastos soltos).
+   ========================================================= */
+function openFaturaValue(id, k, paying) {
+  const c = cardById(id); if (!c) return;
+  const autos = sum(cardItems(id, k).filter(o => !o.extra)), had = finalOf(c, k);
+  const start = had !== null ? had : cardUsage(c, k).gross;
+  const body = `<p class="lead" style="margin-top:8px">Fatura do ${esc(c.name)} de ${monthName(k).toLowerCase()}. Coloque o valor total que veio no app do banco.</p>
+    ${moneyInput('f-amount', start, 'BRL', 'Valor da fatura')}
+    <div class="kvs" style="margin-top:10px"><div class="kv"><span>Automáticos<span class="mi-s">Assinaturas, parcelas e compras que você anotou</span></span><b style="font-size:17px">${fmt(autos)}</b></div>
+      <div class="kv"><span id="f-ex-l">Extras<span class="mi-s">Corridas, iFood e outros gastos soltos</span></span><b style="font-size:17px" id="f-ex">${fmt(Math.max(0, start - autos))}</b></div></div>
+    <p class="note" id="f-ex-warn" hidden>O valor está menor que os automáticos. Confira se alguma assinatura ou parcela não veio nesta fatura.</p>
+    ${swRow('f-paid', 'Já paguei', !!paying)}`;
   openSheet({ title: 'Valor da fatura', body,
     canSave: () => true,
-    onMount(sh) { focusAmount(sh); },
+    onMount(sh) {
+      const upd = () => { const ex = getC(sh) - autos; $('#f-ex', sh).textContent = (ex < 0 ? '− ' : '') + fmt(Math.abs(ex)); $('#f-ex-warn', sh).hidden = ex >= 0; };
+      sh.addEventListener('input', () => setTimeout(upd, 0)); upd(); focusAmount(sh);
+    },
     onSave(sh) {
-      const diff = getC(sh) - u.fatura, est = items.filter(o => o.type === 'bill' && o.est && !o.credit);
-      const base = est.find(o => o.it.cardBase) || est[0];
-      if (base) base.it.cents = Math.max(0, base.it.cents + diff);
-      est.forEach(o => { o.it.estimate = false; });
+      const v = getC(sh);
+      c.fechada = c.fechada || {}; c.fechada[k] = v;
+      /* os extras previstos deste mês viram o valor real (e servem de previsão para os próximos meses) */
+      const ex = Math.max(0, v - autos);
+      const base = month(k, true).bills.find(b => b.cardBase && b.cardId === c.id);
+      if (base) Object.assign(base, { cents: ex, estimate: false });
+      else {
+        const nb = { name: c.name, cents: ex, kind: 'fixa', recurring: true, variable: true, paid: false, cardId: c.id, cardBase: true, cat: 'financeiro' };
+        month(k, true).bills.push({ id: uid(), ...nb, estimate: false });
+        /* meses seguintes que já existem ganham a previsão dos extras (com *) */
+        Object.keys(S.months).filter(m => m > k).forEach(m => { if (!month(m).bills.some(b => b.cardBase && b.cardId === c.id)) month(m, true).bills.push({ id: uid(), ...nb, estimate: true }); });
+      }
       if ($('#f-paid', sh).checked) setFaturaPaid(id, k, true);
       const t = monthTotals(ui.view);
-      commit(); toast(t.out && !t.toPay ? 'Tudo pago neste mês!' : 'Valor da fatura salvo');
-    } });
+      commit(); toast(t.out && !t.toPay ? 'Tudo pago neste mês!' : `Fatura de ${fmt(v)} salva`);
+    },
+    deleteLabel: 'Tirar o valor final',
+    onDelete: had !== null ? () => { delete c.fechada[k]; if (c.extraPaid) delete c.extraPaid[k]; commit(); toast('Valor final tirado'); } : null });
 }
 
 /* =========================================================
@@ -1696,7 +1765,7 @@ function openSheet(o) {
   const w = document.createElement('div'); w.className = 'sheet-wrap';
   w.innerHTML = `<div class="scrim" data-sheet="close"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(o.title)}">
     <header class="sheet-head"><button data-sheet="close">Cancelar</button><h2>${esc(o.title)}</h2>${o.noSave ? '<span style="min-width:80px"></span>' : '<button class="ok" data-sheet="save">Salvar</button>'}</header>
-    <div class="sheet-body">${o.body}${o.noSave ? '' : '<button class="btn primary" data-sheet="save">Salvar</button>'}${o.onDelete ? '<button class="btn plain" data-sheet="delete">Apagar</button>' : ''}</div></div>`;
+    <div class="sheet-body">${o.body}${o.noSave ? '' : '<button class="btn primary" data-sheet="save">Salvar</button>'}${o.onDelete ? `<button class="btn plain" data-sheet="delete">${o.deleteLabel || 'Apagar'}</button>` : ''}</div></div>`;
   document.body.appendChild(w); document.documentElement.classList.add('locked');
   const sheet = w.querySelector('.sheet'); SH = { ...o, w, sheet };
   SH.refresh = () => { const can = o.canSave ? !!o.canSave(sheet) : true; w.querySelectorAll('[data-sheet="save"]').forEach(b => { b.disabled = !can; }); };
@@ -2229,6 +2298,7 @@ function fabAction() {
 function editAny(type, id) {
   const it = findItem(type, id); if (!it) return;
   if (type === 'fatura') { if (ui.tab === 'home') ui.view = homeKey(); return go('cards', 'card:' + id); }
+  if (type === 'extra') { const [cid, k] = id.split('|'); return openFaturaValue(cid, k); }
   if (type === 'recv' || type === 'pay') return openPerson(type, { item: it });
   if (type === 'move') { const pv = provOfMove(id); return pv && openMove(pv, null, it); }
   if (type === 'fx') return openFx(projOfFx(id), it);
@@ -2266,6 +2336,7 @@ document.addEventListener('click', e => {
     case 'move': openMove(provById(el.dataset.id), el.dataset.dir); break;
     case 'editMove': { const pv = provById(r.dataset.prov); const mv = pv && (pv.moves || []).find(x => x.id === id); if (mv) openMove(pv, null, mv); break; }
     case 'loadMine': loadMyData(); loadNovData(); migrate(); ensureMonth(todayKey()); go('home'); save(); toast('Suas contas de outubro foram trazidas'); break;
+    case 'fechar': openFaturaValue(el.dataset.id, el.dataset.k); break;
     case 'payFatura': {
       const on = el.dataset.v === '1', n = setFaturaPaid(el.dataset.id, ui.view, on);
       commit(); toast(on ? `Fatura paga: ${n} ${n === 1 ? 'item marcado' : 'itens marcados'}` : 'Fatura desmarcada');
@@ -2314,7 +2385,7 @@ document.addEventListener('click', e => {
     case 'toggle': {
       if (ui.tab === 'home') ui.view = homeKey();
       { const it0 = findItem(type, id); if (it0 && it0.estimate && (type === 'bill' || type === 'income') && !(type === 'bill' ? it0.paid : it0.received)) { openRealValue(type, id); break; } }
-      if (type === 'fatura') { const fr = faturaRows(ui.view).find(x => x.it.id === id); if (fr && fr.est && !fr.done) { openRealFatura(id, ui.view); break; } }
+      if (type === 'fatura') { const fr = faturaRows(ui.view).find(x => x.it.id === id); if (fr && !fr.done && (fr.est || fr.needsFinal)) { openFaturaValue(id, ui.view, true); break; } }
       const before = monthTotals(ui.view);
       el.classList.toggle('on'); el.setAttribute('aria-pressed', String(el.classList.contains('on')));
       r.classList.toggle('done'); r.classList.add('just');
