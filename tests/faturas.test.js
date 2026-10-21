@@ -60,7 +60,7 @@ const t = H.suite('faturas.test.js');
   /* 6. Mês por categoria, com o que tem dentro das faturas */
   { const { ev, doc } = H.boot({ state: H.estado() }); ev(`ui.tab = 'mes'; ui.view = '2026-11'; ui.list = 'out'; render()`); await H.wait(20);
     const labels = [...doc.querySelectorAll('#view .catrow .cat-top span')].map(x => x.textContent);
-    t.ok(labels.includes('viagem') && labels.includes('extras do cartão') && labels.includes('assinaturas'), 'Para onde vai: viagem, assinaturas e extras do cartão — ' + labels.join(', '));
+    t.ok(labels.includes('viagem ao japão') && labels.includes('cartões') && labels.includes('assinaturas') && labels.includes('contas da casa'), 'Para onde vai: viagem ao japão (projeto), cartões, assinaturas e contas da casa — ' + labels.join(', '));
     const items = ev(`sum(outItems('2026-11').filter(o => o.type !== 'cpay'))`), shown = ev(`[...document.querySelectorAll('#view .catrow b')].reduce((a, b) => a + Math.round(parseFloat(b.textContent.replace(/[^\\d,]/g, '').replace(',', '.')) * 100), 0)`);
     t.ok(Math.abs(items - shown) <= 2, `Soma das categorias bate com as saídas (${items} x ${shown})`); }
 

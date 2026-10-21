@@ -38,7 +38,11 @@ const t = H.suite('digitar.test.js');
   ev(`openFaturaValue(S.cards.find(c => c.name === 'Itaúcard').id, '2026-10')`); await H.wait(20);
   const a = doc.querySelector('#f-amount'); a.value = ''; a.dispatchEvent(new Ev('input', { bubbles: true }));
   typeKeys('#f-amount', '200000'); await H.wait(10);
-  t.ok(/1\.677,00/.test(doc.querySelector('#f-ex').textContent), 'Fatura de R$ 2.000,00: extras R$ 1.677,00 (veio "' + doc.querySelector('#f-ex').textContent + '")');
+  t.ok(/1\.677,00/.test(doc.querySelector('#f-extra').value), 'Fatura de R$ 2.000,00: extras R$ 1.677,00 (veio "' + doc.querySelector('#f-extra').value + '")');
+  /* e o contrário: mudar os extras muda o total */
+  const ex = doc.querySelector('#f-extra'); ex.value = ''; ex.dispatchEvent(new Ev('input', { bubbles: true }));
+  typeKeys('#f-extra', '50000'); await H.wait(10);
+  t.ok(/823,00/.test(doc.querySelector('#f-amount').value), 'Extras de R$ 500,00: total vira R$ 823,00 (veio "' + doc.querySelector('#f-amount').value + '")');
   await closeAll();
   /* 6. Gasto parcelado no formulário principal: o botão salvar libera com o último dígito */
   ev(`openItem({ mode: 'out' })`); await H.wait(20);

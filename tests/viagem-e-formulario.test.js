@@ -9,13 +9,16 @@ function app() { const a = boot(F, { state }); const errs = []; a.w.addEventList
 const input = (doc, sel, v) => { const e = doc.querySelector(sel); e.value = v; e.dispatchEvent(new (doc.defaultView.Event)('input', { bubbles: true })); };
 const money = (doc, ev, sel, c) => { ev(`setC($('${sel}'), ${c})`); doc.querySelector(sel).dispatchEvent(new (doc.defaultView.Event)('input', { bubbles: true })); };
 const chip = (doc, box, v) => doc.querySelector(`#${box} .chip[data-v="${v}"]`).click();
+const tile = (doc, label) => [...doc.querySelectorAll('.addtile')].find(b => b.textContent.trim().toLowerCase() === label).click();
 (async () => {
 /* 1. Shibuya Skytree, ¥ 2.700, o Igor pagou */
 { const { ev, doc, errs } = app();
   const pid = ev(`S.projects[0].id`);
   ev(`ui.tab='projects'; ui.page='proj:${pid}'; render()`);
   ev(`fabAction()`);
-  ok(/novo gasto/i.test(doc.querySelector('.sheet h2').textContent), 'O + do projeto abre "Novo gasto"');
+  ok(['já gastei', 'vou gastar', 'alguém pagou', 'câmbio'].every(l => [...doc.querySelectorAll('.addtile')].some(b => b.textContent.trim().toLowerCase() === l)), 'O + do projeto mostra já gastei, vou gastar, alguém pagou e câmbio');
+  tile(doc, 'já gastei'); await tick();
+  ok(/já gastei/i.test(doc.querySelector('.sheet h2').textContent), 'Abre "já gastei" da viagem');
   chip(doc, 'f-curr', 'JPY'); await tick();
   ok(doc.querySelector('#f-rate'), 'Iene pede a cotação');
   input(doc, '#f-rate', '0,037');
@@ -48,7 +51,7 @@ const chip = (doc, box, v) => doc.querySelector(`#${box} .chip[data-v="${v}"]`).
 { const { ev, doc, errs } = app();
   const pid = ev(`S.projects[0].id`), cid = ev(`S.cards.find(c => c.name === 'Nubank Bela').id`);
   ok(ev(`projById('${pid}').count`) === false, 'Projeto está com "somar no mês" desligado');
-  ev(`ui.tab='projects'; ui.page='proj:${pid}'; render(); fabAction()`);
+  ev(`ui.tab='projects'; ui.page='proj:${pid}'; render(); fabAction()`); tile(doc, 'já gastei'); await tick();
   chip(doc, 'f-curr', 'JPY'); await tick(); input(doc, '#f-rate', '0,037');
   money(doc, ev, '#f-amount', 10000); input(doc, '#f-name', 'Uniqlo');
   chip(doc, 'f-card', cid); await tick();

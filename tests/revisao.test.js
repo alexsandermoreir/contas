@@ -6,6 +6,7 @@ const t = H.suite('revisao.test.js');
   const Ev = d => d.defaultView.Event;
   const input = (doc, sel, v) => { const e = doc.querySelector(sel); e.value = v; e.dispatchEvent(new (Ev(doc))('input', { bubbles: true })); e.dispatchEvent(new (Ev(doc))('change', { bubbles: true })); };
   const chip = (doc, box, v) => doc.querySelector(`#${box} .chip[data-v="${v}"]`).click();
+  const tile = (doc, label) => [...doc.querySelectorAll('.addtile')].find(b => b.textContent.trim().toLowerCase() === label).click();
 
   /* 1. Antecipação paga no mesmo mês da fatura continua saindo da conta */
   { const { ev } = fresh(); const cid = ev(`S.cards.find(c => c.name === 'Itaúcard').id`);
@@ -69,17 +70,22 @@ const t = H.suite('revisao.test.js');
     const expected = ev(`fmt(S.debts.filter(d => d.status !== 'paga' && d.status !== 'prescrita').reduce((a, d) => a + (d.updatedCents || d.cents), 0))`);
     t.ok(doc.querySelector('.hero-value').textContent.replace(/\s/g, ' ').includes(expected.replace(/\s/g, ' ').toLowerCase().replace('r$', 'R$')), 'Total de dívidas com o valor de hoje: ' + expected); }
 
-  /* 7. O + abre direto o gasto, com link para os outros tipos */
+  /* 7. O + mostra o que dá para lançar naquela tela */
   { const { ev, doc } = fresh(); ev(`ui.tab = 'home'; render(); fabAction()`); await H.wait(20);
-    t.ok(!!doc.querySelector('.sheet #f-amount') && !!doc.querySelector('[data-act="moreTypes"]'), 'O + abre o formulário de gasto direto');
-    ev(`closeSheet()`); await H.wait(400); ev(`ui.tab = 'cards'; ui.page = null; render(); fabAction()`); await H.wait(20);
-    t.ok(!!doc.querySelector('.sheet #f-amount'), 'Na aba cartões o + também anota um gasto'); }
+    const labels = [...doc.querySelectorAll('.addtile')].map(b => b.textContent.trim().toLowerCase());
+    t.ok(['gasto', 'no cartão', 'entrada', 'assinatura', 'parcelado', 'anual', 'alguém pagou'].every(l => labels.includes(l)), 'Início: o + mostra os tipos em quadrados: ' + labels.join(', '));
+    tile(doc, 'gasto'); await H.wait(20);
+    t.ok(!!doc.querySelector('.sheet #f-amount') && /novo gasto/i.test(doc.querySelector('.sheet h2').textContent), 'Gasto abre o formulário "novo gasto"');
+    ev(`closeSheet()`); await H.wait(400); ev(`ui.tab = 'cards'; ui.page = null; ui.cardSeg = 'cards'; render(); fabAction()`); await H.wait(20);
+    t.ok([...doc.querySelectorAll('.addtile')].some(b => /compra no cartão/i.test(b.textContent)), 'Na aba cartões o + oferece compra no cartão'); }
 
-  /* 8. Valor estimado só aparece para conta que se repete */
+  /* 8. Natureza: fixo ou variável (*), com lembrete; parcelado é sempre fixo */
   { const { ev, doc } = fresh(); ev(`openItem({ mode: 'out' })`); await H.wait(20);
-    t.ok(!doc.querySelector('#f-est'), 'Gasto que não repete: sem "valor estimado"');
-    chip(doc, 'f-freq', 'mes'); await H.wait(20);
-    t.ok(!!doc.querySelector('#f-est'), 'Todo mês: aparece "valor estimado"'); }
+    t.ok(!!doc.querySelector('#f-nat .chip[data-v="fixo"].on'), 'Começa como fixo');
+    chip(doc, 'f-nat', 'var'); await H.wait(20);
+    t.ok(!!doc.querySelector('#f-remind'), 'Variável: pede o dia do lembrete');
+    chip(doc, 'f-freq', 'parc'); await H.wait(20);
+    t.ok(!doc.querySelector('#f-nat'), 'Parcelado: sem fixo/variável'); }
 
   /* 10. Uma linha por pessoa no mês */
   { const { ev, doc } = fresh();
@@ -104,6 +110,8 @@ const t = H.suite('revisao.test.js');
   const { ev, doc } = H2.boot({ state: H2.estado() });
   const cid = ev(`S.cards.find(c => c.name === 'Meu Nubank').id`);
   ev(`ui.tab = 'cards'; ui.page = 'card:${cid}'; ui.view = '2026-11'; render(); fabAction()`); await H2.wait(20);
+  [...doc.querySelectorAll('.addtile')].find(b => b.textContent.trim().toLowerCase() === 'compra').click(); await H2.wait(20);
+  t2.ok(/compra no meu nubank/i.test(doc.querySelector('.sheet h2').textContent) && !doc.querySelector('#f-card'), 'No cartão: compra já vai para o Meu Nubank (sem escolher cartão)');
   t2.ok(doc.querySelector('#f-date').value === '2026-10-20', 'Data sugerida é hoje: ' + doc.querySelector('#f-date').value);
   t2.end();
 })();
