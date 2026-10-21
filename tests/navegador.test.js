@@ -15,6 +15,7 @@ let chromium; try { ({ chromium } = require('playwright')); } catch (e) { ({ chr
 
   /* 1. + abre o gasto; digitar 1290 vira R$ 12,90; salvar aparece no mês */
   await p.locator('#fab').tap(); await p.waitForTimeout(300);
+  await p.locator('.addtile', { hasText: /^\s*gasto\s*$/ }).tap(); await p.waitForTimeout(400);
   await typeIn('#f-amount', '1290'); await typeIn('#f-name', 'Padaria');
   t.ok((await p.inputValue('#f-amount')).replace(/\s/g, ' ') === 'R$ 12,90', 'Digitar 1290 mostra R$ 12,90');
   await p.locator('.sheet [data-sheet="save"]').first().tap(); await p.waitForTimeout(500);
@@ -23,6 +24,7 @@ let chromium; try { ({ chromium } = require('playwright')); } catch (e) { ({ chr
   /* 2. Viagem: ¥ 1.450 digitado mostra ≈ R$ 47,68 */
   await p.evaluate(() => { S.projects[0].rates = { JPY: 0.03288 }; ui.tab = 'projects'; ui.page = 'proj:' + S.projects[0].id; render(); });
   await p.locator('#fab').tap(); await p.waitForTimeout(300);
+  await p.locator('.addtile', { hasText: 'já gastei' }).tap(); await p.waitForTimeout(400);
   await p.locator('#f-curr .chip[data-v="JPY"]').tap(); await p.waitForTimeout(100);
   await typeIn('#f-amount', '1450');
   t.ok(/R\$\s?47,68/.test(await p.textContent('#f-hint')), 'Iene: ¥ 1.450 ≈ R$ 47,68 (veio "' + await p.textContent('#f-hint') + '")');
